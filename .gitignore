@@ -1,0 +1,3 @@
+examples/surfaces/
+*.log
+.DS_Store

@@ -1,0 +1,8 @@
+examples/
+docs/
+README.md
+CHANGELOG.md
+.github/
+.git/
+.gitignore
+.dockerignore

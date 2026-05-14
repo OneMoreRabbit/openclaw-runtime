@@ -1,0 +1,16 @@
+{
+  "agent": {
+    "name": "smoke",
+    "model": "stub/stub"
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/home/agent/.openclaw/workspace",
+      "sandbox": { "mode": "non-main" }
+    }
+  },
+  "gateway": {
+    "bind": "lan",
+    "port": 18789
+  }
+}

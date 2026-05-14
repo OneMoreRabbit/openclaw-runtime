@@ -1,0 +1,14 @@
+# Always normalise text files; default text-detection with LF in the repo.
+* text=auto eol=lf
+
+# Files that MUST be LF regardless of platform — Docker, bash, and config
+# files inside the image will misbehave if these get CRLF line endings.
+*.sh        text eol=lf
+*.env       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.j2        text eol=lf
+Dockerfile  text eol=lf
+.dockerignore text eol=lf
+.gitignore  text eol=lf

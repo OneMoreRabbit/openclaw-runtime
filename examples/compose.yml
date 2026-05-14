@@ -1,0 +1,24 @@
+# Minimal compose stack for local smoke testing the wrapper image.
+# Run from this directory: `docker compose up -d`. Hits /healthz at :18789.
+# See ../README.md.
+
+services:
+  openclaw:
+    image: openclaw-runtime:dev
+    container_name: openclaw-smoke
+    environment:
+      AGENT_NAME: smoke
+      AGENT_UID: "65534"
+      AGENT_PRIMARY_GID: "65534"
+      AGENT_SUPP_GIDS: ""
+      AGENT_HOME: /agent
+      OPENCLAW_BIND: lan
+      OPENCLAW_PORT: "18789"
+    volumes:
+      - ./surfaces/configs:/agent/configs
+      - ./surfaces/memory:/agent/memory
+      - ./surfaces/sessions:/agent/sessions
+      - ./surfaces/scratch:/agent/scratch
+    ports:
+      - "127.0.0.1:18789:18789"
+    restart: "no"

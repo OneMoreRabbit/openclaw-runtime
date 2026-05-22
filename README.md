@@ -50,5 +50,6 @@ the full table.
 
 ## Status
 
-Phase 0 scaffold. Buildable, but the entrypoint has not yet been verified against a real upstream
-boot — that's Phase 1 of `image-compile`.
+Current wrapper revision: **r2** (see [CHANGELOG.md](CHANGELOG.md)). Built and probe-verified
+against openclaw `2026.5.5`. The r2 entrypoint pins `OPENCLAW_STATE_DIR` so config discovery is
+independent of the container uid.

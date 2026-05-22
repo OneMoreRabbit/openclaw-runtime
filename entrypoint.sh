@@ -58,6 +58,17 @@ fi
 if ! getent passwd "${AGENT_UID}" >/dev/null; then
   useradd -u "${AGENT_UID}" -g "${AGENT_PRIMARY_GID}" -d /home/agent -s /usr/sbin/nologin -M agent \
     || die 6 "useradd failed"
+else
+  # AGENT_UID collides with an account already in the base image (e.g. `node`
+  # at 1000, `nobody` at 65534). useradd is skipped, so no /home/agent home is
+  # registered for this uid. State discovery still works because we export
+  # OPENCLAW_STATE_DIR below — but supplementary-group attachment may target
+  # the wrong account. Warn loudly; don't block (the probe legitimately runs
+  # as the operator's own uid, which can collide).
+  existing="$(getent passwd "${AGENT_UID}" | cut -d: -f1,6)"
+  log "WARNING: AGENT_UID ${AGENT_UID} matches pre-existing account '${existing%%:*}'" \
+      "(home '${existing##*:}'); identity provisioning skipped." \
+      "State discovery handled by OPENCLAW_STATE_DIR; supplementary groups may not apply."
 fi
 
 if [ -n "${AGENT_SUPP_GIDS}" ]; then
@@ -90,6 +101,13 @@ ln -sfn "${AGENT_HOME}/scratch/main"                     "${HOME_OC}/scratch"
 
 chown -h "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}"/* || true
 chown    "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}"   || true
+
+# Pin openclaw's state directory explicitly. Without this, openclaw derives
+# its state root from $HOME, which gosu sets from the agent uid's passwd entry
+# — and if AGENT_UID collides with a pre-existing account (no /home/agent home
+# registered) openclaw looks in the wrong place and exits 78 "Missing config".
+# OPENCLAW_STATE_DIR makes discovery independent of uid, $HOME, and gosu.
+export OPENCLAW_STATE_DIR="${HOME_OC}"
 
 # ---- 6. Source secrets ------------------------------------------------------
 

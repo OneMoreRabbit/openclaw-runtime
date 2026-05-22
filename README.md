@@ -50,6 +50,8 @@ the full table.
 
 ## Status
 
-Current wrapper revision: **r2** (see [CHANGELOG.md](CHANGELOG.md)). Built and probe-verified
-against openclaw `2026.5.5`. The r2 entrypoint pins `OPENCLAW_STATE_DIR` so config discovery is
-independent of the container uid.
+Current wrapper revision: **r3** (see [CHANGELOG.md](CHANGELOG.md)). Built and probe-verified
+against openclaw `2026.5.5`. r2 pinned `OPENCLAW_STATE_DIR` so config discovery is uid-independent;
+r3 splits the entrypoint into a root phase (`entrypoint.sh`) and an agent phase (`agent-run.sh`) so
+the agent-owned surface files are read by the agent user, not by root — required for `root_squash`
+NFS exports.

@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# openclaw-runtime entrypoint.
-# Runs as root (briefly): preflight, identity provisioning, symlink relocation,
-# secrets sourcing, then drops to the agent user and execs openclaw.
+# openclaw-runtime entrypoint — ROOT PHASE.
 #
-# Exit codes (must stay in sync with integrations/openclaw-image-architecture-v0_2.md):
-#   3 = missing required env var
-#   4 = missing or empty surface mount
-#   5 = missing or invalid openclaw.json
-#   6 = identity provisioning failed
-#   7 = secrets file present but unreadable
+# Runs as root: validate environment, provision the in-container agent
+# identity, create the path-relocation symlinks, then drop privileges and
+# hand off to agent-run.sh for everything that touches the surface mounts.
+#
+# Why the split (wrapper rev r3): the four surface mounts are bind-mounted
+# host paths that resolve through to NFS. Under a root_squash export the
+# container's root is squashed to `nobody` and cannot read agent-owned 0600
+# files (openclaw.json, secrets.env) on those surfaces. So mount/config
+# validation and secrets sourcing must run AFTER the privilege drop, as
+# AGENT_UID. Only identity provisioning and the container-local symlink
+# relocation genuinely need root — they stay here.
+#
+# Exit codes (kept in sync with the openclaw-image-architecture doc):
+#   3 = missing required env var      (this script)
+#   6 = identity provisioning failed  (this script)
+#   4 = missing or empty surface mount   (agent-run.sh)
+#   5 = missing or invalid openclaw.json (agent-run.sh)
+#   7 = secrets file present but unreadable (agent-run.sh)
 #  >7 = upstream openclaw exit code
 
 set -euo pipefail
@@ -26,27 +36,7 @@ die() { local code="$1"; shift; log "ERROR ($code): $*"; exit "$code"; }
 # AGENT_SUPP_GIDS may be empty; the variable must exist.
 AGENT_SUPP_GIDS="${AGENT_SUPP_GIDS-}"
 
-OPENCLAW_BIND="${OPENCLAW_BIND:-lan}"
-OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
-OPENCLAW_EXTRA_ARGS="${OPENCLAW_EXTRA_ARGS:-}"
-
-# ---- 2. Validate surface mounts --------------------------------------------
-
-for surface in configs memory sessions scratch; do
-  mnt="${AGENT_HOME}/${surface}/main"
-  if [ ! -d "${mnt}" ]; then
-    die 4 "surface mount missing: ${mnt}"
-  fi
-done
-
-# ---- 3. Validate openclaw.json ---------------------------------------------
-
-CONF_FILE="${AGENT_HOME}/configs/main/openclaw.json"
-if [ ! -r "${CONF_FILE}" ]; then
-  die 5 "openclaw.json missing or unreadable at ${CONF_FILE}"
-fi
-
-# ---- 4. Provision in-container agent identity -------------------------------
+# ---- 2. Provision in-container agent identity -------------------------------
 
 # Create group(s) and the agent user with the host-side IDs.
 # If a group/user with that ID already exists, reuse it.
@@ -87,7 +77,10 @@ fi
 
 chown -R "${AGENT_UID}:${AGENT_PRIMARY_GID}" /home/agent
 
-# ---- 5. Path relocation symlinks --------------------------------------------
+# ---- 3. Path relocation symlinks --------------------------------------------
+
+# Creating a symlink does not read its target, so this is safe as root even
+# though the targets live on the (root-squashed) surface mounts.
 
 HOME_OC="/home/agent/.openclaw"
 mkdir -p "${HOME_OC}"
@@ -107,25 +100,11 @@ chown    "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}"   || true
 # — and if AGENT_UID collides with a pre-existing account (no /home/agent home
 # registered) openclaw looks in the wrong place and exits 78 "Missing config".
 # OPENCLAW_STATE_DIR makes discovery independent of uid, $HOME, and gosu.
+# Exported so it survives the gosu hand-off to agent-run.sh.
 export OPENCLAW_STATE_DIR="${HOME_OC}"
 
-# ---- 6. Source secrets ------------------------------------------------------
+# ---- 4. Drop privileges; hand off to the agent phase ------------------------
 
-SECRETS_FILE="${AGENT_HOME}/configs/main/secrets.env"
-if [ -e "${SECRETS_FILE}" ]; then
-  if [ ! -r "${SECRETS_FILE}" ]; then
-    die 7 "secrets.env present but unreadable"
-  fi
-  set -a
-  # shellcheck disable=SC1090
-  . "${SECRETS_FILE}"
-  set +a
-fi
+log "dropping to uid=${AGENT_UID} gid=${AGENT_PRIMARY_GID}; handing off to agent-run.sh"
 
-# ---- 7. Drop privileges and exec --------------------------------------------
-
-log "starting openclaw gateway as uid=${AGENT_UID} gid=${AGENT_PRIMARY_GID} bind=${OPENCLAW_BIND} port=${OPENCLAW_PORT}"
-
-# shellcheck disable=SC2086
-exec gosu "${AGENT_UID}:${AGENT_PRIMARY_GID}" \
-  openclaw gateway run --bind "${OPENCLAW_BIND}" --port "${OPENCLAW_PORT}" ${OPENCLAW_EXTRA_ARGS}
+exec gosu "${AGENT_UID}:${AGENT_PRIMARY_GID}" /opt/wrapper/agent-run.sh

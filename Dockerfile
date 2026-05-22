@@ -26,8 +26,8 @@ RUN npm install -g openclaw@${OPENCLAW_VERSION}
 RUN mkdir -p /opt/wrapper /home/agent /agent/configs /agent/memory /agent/sessions /agent/scratch \
  && chmod 0755 /home/agent
 
-COPY entrypoint.sh /opt/wrapper/entrypoint.sh
-RUN chmod 0755 /opt/wrapper/entrypoint.sh
+COPY entrypoint.sh agent-run.sh /opt/wrapper/
+RUN chmod 0755 /opt/wrapper/entrypoint.sh /opt/wrapper/agent-run.sh
 
 ENV OPENCLAW_BIND=lan \
     OPENCLAW_PORT=18789 \

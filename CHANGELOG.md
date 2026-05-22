@@ -4,6 +4,37 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## r3 — 2026-05-22
+
+**Fix: the root phase no longer reads agent-owned files on the NFS surfaces.**
+
+The four surface mounts are bind-mounted host paths that resolve through to
+NFS. Under a `root_squash` export the container's root is squashed to
+`nobody` and cannot read agent-owned 0600 files — `openclaw.json` and
+`secrets.env` are both mode 0600, owned by the agent user. The r2 entrypoint
+validated the mounts and `openclaw.json`, and sourced `secrets.env`, all
+while still root — so on a root-squashed deploy those steps fail (`die 5`,
+`die 7`).
+
+The entrypoint is now split into two phases:
+
+- `entrypoint.sh` (**root phase**): validate environment, provision the agent
+  identity, create the relocation symlinks, export `OPENCLAW_STATE_DIR`, then
+  `gosu` to the agent user. None of this reads a surface file.
+- `agent-run.sh` (**agent phase**, new, runs as `AGENT_UID`): validate the
+  surface mounts, validate `openclaw.json`, source `secrets.env`, exec
+  openclaw. The agent user owns these files and — unlike squashed-root — can
+  read them.
+
+Exit codes are unchanged (3/6 from the root phase, 4/5/7 from the agent
+phase, >7 from openclaw). `OPENCLAW_STATE_DIR` (r2) is exported before the
+hand-off and survives it.
+
+Companion change in agent-compile: `env_file:` removed from the rendered
+`compose.yml` (the Compose CLI cannot read the 0600 NFS `secrets.env`
+either) — the entrypoint sources it instead. See
+`docs/image-compile-entrypoint-secrets-response-v0_1.md`.
+
 ## r2 — 2026-05-21
 
 **Fix: openclaw config discovery is now uid-independent.**

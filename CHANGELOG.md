@@ -4,6 +4,28 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## r4 — 2026-07-07
+
+**Fix: `~/.openclaw/state/` and `~/.openclaw/credentials/` now persist.**
+
+Upstream 2026.6.x introduced a sqlite runtime state store at
+`~/.openclaw/state/openclaw.sqlite`, and channel auth has always lived at
+`~/.openclaw/credentials/` (e.g. the WhatsApp Baileys pairing session, GitHub
+credentials). Neither path was in the r1–r3 relocation set, so both landed in
+the container's ephemeral filesystem and were destroyed on every recreate —
+WhatsApp needed re-pairing after any redeploy or image upgrade. The
+`2026.6.11-r3` probe report flagged the state paths as relocation candidates
+(Amendment 5 sqlite rule).
+
+- `entrypoint.sh` (root phase): two new relocation symlinks onto the configs
+  surface (0700, never synced, never ingested — the same home as
+  `exec-approvals.json`): `state → ${AGENT_HOME}/configs/main/state`,
+  `credentials → ${AGENT_HOME}/configs/main/credentials`.
+- `agent-run.sh` (agent phase): `mkdir -p` both symlink targets before exec —
+  must happen as AGENT_UID because squashed root cannot mkdir on the surface.
+
+Exit codes unchanged.
+
 ## r3 — 2026-05-22
 
 **Fix: the root phase no longer reads agent-owned files on the NFS surfaces.**

@@ -31,6 +31,13 @@ for surface in configs memory sessions scratch; do
   fi
 done
 
+# ---- Ensure relocation targets exist (r4) ------------------------------------
+
+# Targets of the state/credentials symlinks created in the root phase. Must be
+# created here, as AGENT_UID: under a root_squash export the container's root
+# cannot mkdir on the surface. Idempotent on every start.
+mkdir -p "${AGENT_HOME}/configs/main/state" "${AGENT_HOME}/configs/main/credentials"
+
 # ---- Validate openclaw.json -------------------------------------------------
 
 CONF_FILE="${AGENT_HOME}/configs/main/openclaw.json"

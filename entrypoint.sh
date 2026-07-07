@@ -92,6 +92,15 @@ ln -sfn "${AGENT_HOME}/memory/main/openclaw_memory"      "${HOME_OC}/memory"
 ln -sfn "${AGENT_HOME}/sessions/main"                    "${HOME_OC}/sessions"
 ln -sfn "${AGENT_HOME}/scratch/main"                     "${HOME_OC}/scratch"
 
+# r4: openclaw also writes ~/.openclaw/state/ (sqlite runtime state, upstream
+# 2026.6.x+) and ~/.openclaw/credentials/ (channel auth — e.g. the WhatsApp
+# Baileys pairing session). Unrelocated, both die with the container on every
+# recreate — re-pairing WhatsApp each deploy. They are secret-bearing runtime
+# state, so they live on the configs surface (0700, never synced, never
+# ingested) beside exec-approvals.json.
+ln -sfn "${AGENT_HOME}/configs/main/state"               "${HOME_OC}/state"
+ln -sfn "${AGENT_HOME}/configs/main/credentials"         "${HOME_OC}/credentials"
+
 chown -h "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}"/* || true
 chown    "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}"   || true
 

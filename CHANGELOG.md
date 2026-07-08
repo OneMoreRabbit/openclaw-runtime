@@ -4,6 +4,47 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## r5 — 2026-07-08
+
+**Fix: session relocation matches the 2026.6.x per-agent layout; auth store
+stays on the configs surface.**
+
+The 2026.6.x runtime keeps a per-agent tree `~/.openclaw/agents/<id>/` and
+treats a populated `~/.openclaw/sessions/` as legacy: on boot it `rename()`s
+every file into `~/.openclaw/agents/main/sessions/`. Through r4 the wrapper
+relocated the legacy path (`sessions → sessions surface`) but not the
+per-agent tree, so the migration crossed a filesystem boundary — every
+rename failed `EXDEV`, the runtime renamed the symlink aside
+(`sessions.legacy-<ts>`), and new sessions were written container-ephemerally
+(destroyed on recreate; each recreate replayed the failed migration).
+
+The per-agent tree also holds **secrets**: the auth store (OAuth tokens,
+API-key auth) lives at `agents/<id>/agent/openclaw-agent.sqlite`, so the tree
+cannot be relocated wholesale to the (ingested, surface-group-readable)
+sessions surface. The relocation splits it:
+
+- `entrypoint.sh` (root phase): `agents → ${AGENT_HOME}/configs/main/agents`
+  — the whole per-agent tree defaults to the configs surface (0700, never
+  synced, never ingested). Anything the runtime adds under `agents/` in
+  future is secrets-safe by default. The legacy `~/.openclaw/sessions`
+  symlink is **removed** — the path must not exist, or the runtime replays
+  its legacy migration on every recreate.
+- `agent-run.sh` (agent phase, as `AGENT_UID`): for `main` and every id
+  present under `configs/main/agents/`, symlink the episodic-record leaf
+  `agents/<id>/sessions → ${AGENT_HOME}/sessions/<id>/sessions` (targets
+  `mkdir -p`'d first). Leaf symlinks live on the configs surface and persist
+  across recreates. A real `sessions/` dir left by a sub-agent created
+  mid-run is moved across to the sessions surface before the symlink is
+  placed.
+
+Net layout: `agents/<id>/sessions/` → sessions surface (episodic record);
+everything else under `agents/<id>/` (auth store, agent state) → configs
+surface. `~/.openclaw/memory` is unchanged (2026.6.11 still consumes the
+flat relocated store; the probe should confirm no memory writes appear under
+the agents tree).
+
+Exit codes unchanged.
+
 ## r4 — 2026-07-07
 
 **Fix: `~/.openclaw/state/` and `~/.openclaw/credentials/` now persist.**

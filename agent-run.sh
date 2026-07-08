@@ -38,6 +38,42 @@ done
 # cannot mkdir on the surface. Idempotent on every start.
 mkdir -p "${AGENT_HOME}/configs/main/state" "${AGENT_HOME}/configs/main/credentials"
 
+# ---- Per-agent session relocation (r5) ----------------------------------------
+
+# ~/.openclaw/agents is symlinked (root phase) to configs/main/agents — the
+# secrets-safe home for the per-agent tree (agents/<id>/agent/ holds the auth
+# store). The episodic record, agents/<id>/sessions/, belongs on the sessions
+# surface instead: symlink each id's sessions/ leaf to
+# ${AGENT_HOME}/sessions/<id>/sessions. Leaf symlinks live ON the configs
+# surface, so they persist across recreates; ln -sfn keeps this idempotent.
+#
+# A sub-agent created mid-run writes sessions into a REAL directory here
+# (still persistent — configs surface) until the next boot places its leaf
+# symlink; that boot moves the contents across to the sessions surface first.
+AGENTS_DIR="${AGENT_HOME}/configs/main/agents"
+mkdir -p "${AGENTS_DIR}/main"
+
+relocate_sessions_leaf() {
+  local id="$1"
+  local leaf="${AGENTS_DIR}/${id}/sessions"
+  local target="${AGENT_HOME}/sessions/${id}/sessions"
+  mkdir -p "${target}"
+  if [ -d "${leaf}" ] && [ ! -L "${leaf}" ]; then
+    if [ -n "$(ls -A "${leaf}" 2>/dev/null)" ]; then
+      log "relocating ${leaf} contents to ${target} (one-time, cross-surface)"
+      (shopt -s dotglob; mv "${leaf}"/* "${target}/") \
+        || die 4 "session leaf relocation failed for agent id '${id}'"
+    fi
+    rmdir "${leaf}"
+  fi
+  ln -sfn "${target}" "${leaf}"
+}
+
+for agent_dir in "${AGENTS_DIR}"/*/; do
+  [ -d "${agent_dir}" ] || continue
+  relocate_sessions_leaf "$(basename "${agent_dir}")"
+done
+
 # ---- Validate openclaw.json -------------------------------------------------
 
 CONF_FILE="${AGENT_HOME}/configs/main/openclaw.json"

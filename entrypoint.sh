@@ -89,8 +89,21 @@ ln -sfn "${AGENT_HOME}/configs/main/openclaw.json"       "${HOME_OC}/openclaw.js
 ln -sfn "${AGENT_HOME}/configs/main/exec-approvals.json" "${HOME_OC}/exec-approvals.json"
 ln -sfn "${AGENT_HOME}/memory/main/workspace"            "${HOME_OC}/workspace"
 ln -sfn "${AGENT_HOME}/memory/main/openclaw_memory"      "${HOME_OC}/memory"
-ln -sfn "${AGENT_HOME}/sessions/main"                    "${HOME_OC}/sessions"
 ln -sfn "${AGENT_HOME}/scratch/main"                     "${HOME_OC}/scratch"
+
+# r5: the 2026.6.x runtime keeps a per-agent tree ~/.openclaw/agents/<id>/ and
+# treats a populated ~/.openclaw/sessions/ as legacy (it rename()s the files
+# into agents/main/sessions/ — EXDEV across a symlink boundary, see CHANGELOG).
+# The agents/ tree holds SECRETS (agents/<id>/agent/openclaw-agent.sqlite —
+# OAuth tokens, API-key auth), so the whole tree relocates to the CONFIGS
+# surface (0700, never synced, never ingested): anything the runtime adds
+# under agents/ defaults to secrets-safe persistence. Only the episodic
+# record — agents/<id>/sessions/ — belongs on the sessions surface;
+# agent-run.sh symlinks those leaves out per id (surface writes need
+# AGENT_UID under root_squash). The legacy ~/.openclaw/sessions symlink is
+# gone on purpose: the path must not exist, or the runtime replays its legacy
+# migration on every recreate.
+ln -sfn "${AGENT_HOME}/configs/main/agents"              "${HOME_OC}/agents"
 
 # r4: openclaw also writes ~/.openclaw/state/ (sqlite runtime state, upstream
 # 2026.6.x+) and ~/.openclaw/credentials/ (channel auth — e.g. the WhatsApp

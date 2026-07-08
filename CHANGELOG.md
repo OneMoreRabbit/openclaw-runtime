@@ -4,44 +4,68 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
-## r6 — 2026-07-08
+## r6 — 2026-07-08 (amended same day; no r6 image was built from the earlier entry)
 
-**Fix: the plugin root `~/.openclaw/npm/` now persists on the configs
-surface.**
+**Restructure: `OPENCLAW_STATE_DIR` now points directly at the configs
+surface. State-dir entries are real files — no relocation symlinks.**
 
-2026.6.x pluginises providers and channels beyond the stock set (`brave`,
-`whatsapp`, `discord` are npm-fetched via `openclaw plugins install`).
-Plugin code lands under `$OPENCLAW_STATE_DIR/npm/projects/<pkg>-<hash>` —
-the one state-dir writable r1–r5 did not relocate, so it was
-container-ephemeral. Worse than loss: the install is *registered* in
-`openclaw.json` (configs surface, persistent), so on recreate the config
-references code that no longer exists and the gateway crash-loops
-(`tools.web.search.provider: web_search provider is not available: brave`).
+Three failures in one week, all casualties of the r1–r5 per-path symlink
+model:
 
-- `entrypoint.sh` (root phase): `npm → ${AGENT_HOME}/configs/main/npm`.
-  Plugin code is agent-scoped runtime state, version-recorded in config,
-  and secrets-adjacent (project dirs can embed tokens) → configs surface
-  (0700, never synced, never ingested), consistent with
-  state/credentials/agents. The symlink preserves absolute
-  install/registration paths across recreates.
-- `agent-run.sh` (agent phase): `mkdir -p` of the target, as `AGENT_UID`
-  (root_squash rule).
+1. r5: the 2026.6.x legacy session migration `rename()`d across a symlink
+   boundary (`EXDEV`).
+2. r6 as filed: plugin code (`openclaw plugins install`, 2026.6.x
+   pluginised providers/channels) landed under `$OPENCLAW_STATE_DIR/npm` —
+   the one state-dir writable left unrelocated. Ephemeral code + persistent
+   config registration = gateway crash-loop on recreate
+   (`web_search provider is not available: brave`).
+3. r6 addendum, live on `agent_top_zaph`: the runtime **refuses to write
+   `exec-approvals.json` through a symlink** (`[tools] exec failed:
+   Refusing to write exec approvals via symlink`). A per-file symlink can
+   never satisfy that check, and the wrapper cannot add bind mounts — the
+   only wrapper-side fix is for the state dir itself to resolve to the
+   surface.
+
+So r6 inverts the model instead of adding a ninth symlink:
+
+- `entrypoint.sh` (root phase): `export
+  OPENCLAW_STATE_DIR=${AGENT_HOME}/configs/main`. Every state-dir entry —
+  `openclaw.json`, `exec-approvals.json`, `state/`, `credentials/`,
+  `agents/`, `npm/`, and whatever future runtimes add — is a **real
+  file/dir** on the configs surface (0700, never synced, never ingested).
+  Secrets-safe and persistent **by default**. `~/.openclaw` is kept as an
+  empty dir (residual hardcoded paths fail soft; the probe's
+  relocation-candidate summary would surface any write landing there).
+- **The on-surface layout is byte-identical to r4/r5's** —
+  `configs/main/{openclaw.json,state,credentials,agents,npm}` — so
+  existing deployments (zaph) carry over with **zero data migration**.
+- `agent-run.sh` (agent phase, as `AGENT_UID` — root_squash: root cannot
+  write to the export): entries belonging on *other* surfaces stay
+  symlinks, now living on the surface (persistent, idempotently re-placed):
+  `workspace → memory/main/workspace`, `memory → memory/main/openclaw_memory`,
+  `scratch → scratch/main`, and the r5 per-id session leaves
+  `agents/<id>/sessions → sessions/<id>/sessions` (unchanged semantics). A
+  real dir found at any of these paths has its contents moved across before
+  the symlink is placed.
+- `logs → /tmp/openclaw-logs` (container-local): preserves the
+  logs-stay-ephemeral decision — `docker logs` is the diagnostic surface;
+  gateway log chatter doesn't belong on NFS, nor secrets-in-logs on a share
+  that outlives the container.
+- `exec-approvals.json` is deliberately **not seeded**: with no symlink in
+  its path the runtime creates and maintains its own file (the refusal was
+  symlink-specific); seeding a guessed schema risks breaking approvals a
+  second way.
 
 The `openclaw` peerDependency symlink inside each plugin project targets
 `/usr/local/lib/node_modules/openclaw` — present in every wrapper image, so
 installed plugins survive image upgrades (re-install only on
 upstream-compat breaks).
 
-**Migration note:** plugins installed on r5 or earlier are gone (they were
-ephemeral); if their registration lingers in `openclaw.json`, the gateway
-will not start until the plugin is reinstalled once on r6 (files then land
-on the surface) or the registration is removed.
-
-**`logs/` considered and left ephemeral** (brief item 4): `docker logs` is
-the diagnostic surface, the probe captures container logs on failure, and
-persisting chatty log writes to NFS adds load and a potential
-secrets-in-logs exposure for no operational gain. Revisit only if a debug
-scenario needs post-mortem logs across recreates.
+**Migration notes:** plugins installed on r5 or earlier are gone (they were
+ephemeral); if their registration lingers in `openclaw.json` the gateway
+will not start until the plugin is reinstalled once (now persistent) or
+deregistered. Approvals recorded before r6 lived behind the refused symlink
+(i.e. nowhere) — expect a clean approvals file.
 
 Exit codes unchanged.
 

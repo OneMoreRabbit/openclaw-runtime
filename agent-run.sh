@@ -31,50 +31,71 @@ for surface in configs memory sessions scratch; do
   fi
 done
 
-# ---- Ensure relocation targets exist (r4) ------------------------------------
+# ---- State-dir layout on the configs surface (r6) -----------------------------
 
-# Targets of the state/credentials (r4) and plugin-root (r6) symlinks created
-# in the root phase. Must be created here, as AGENT_UID: under a root_squash
-# export the container's root cannot mkdir on the surface. Idempotent on
-# every start.
-mkdir -p "${AGENT_HOME}/configs/main/state" \
-         "${AGENT_HOME}/configs/main/credentials" \
-         "${AGENT_HOME}/configs/main/npm"
+# OPENCLAW_STATE_DIR is the configs surface itself (see entrypoint.sh r6
+# note): state-dir entries are real files/dirs there. Everything in this
+# section runs as AGENT_UID — under a root_squash export the container's
+# root cannot write to the surface. Idempotent on every start.
+STATE_DIR="${AGENT_HOME}/configs/main"
+mkdir -p "${STATE_DIR}/state" "${STATE_DIR}/credentials" "${STATE_DIR}/npm"
+
+# exec-approvals.json is deliberately NOT seeded: with no symlink in its
+# path the runtime creates and maintains its own file (its refusal was
+# symlink-specific), and seeding a guessed schema risks breaking approvals
+# a second way.
+
+# Entries that belong on OTHER surfaces stay symlinks — now living on the
+# configs surface, so they persist across recreates. logs/ intentionally
+# points at container-local /tmp: docker logs is the diagnostic surface, and
+# gateway log chatter doesn't belong on NFS (nor secrets-in-logs on a share
+# that outlives the container).
+ensure_link() {
+  local link="$1" target="$2"
+  if [ -d "${link}" ] && [ ! -L "${link}" ]; then
+    # A real dir (runtime-created before this boot placed the symlink):
+    # preserve its contents on the link's target, then replace it.
+    if [ -n "$(ls -A "${link}" 2>/dev/null)" ]; then
+      log "relocating ${link} contents to ${target} (one-time)"
+      mkdir -p "${target}"
+      (shopt -s dotglob; mv "${link}"/* "${target}/") \
+        || die 4 "relocation failed: ${link} -> ${target}"
+    fi
+    rmdir "${link}"
+  fi
+  ln -sfn "${target}" "${link}"
+}
+
+mkdir -p "${AGENT_HOME}/memory/main/workspace" \
+         "${AGENT_HOME}/memory/main/openclaw_memory" \
+         /tmp/openclaw-logs
+ensure_link "${STATE_DIR}/workspace" "${AGENT_HOME}/memory/main/workspace"
+ensure_link "${STATE_DIR}/memory"    "${AGENT_HOME}/memory/main/openclaw_memory"
+ensure_link "${STATE_DIR}/scratch"   "${AGENT_HOME}/scratch/main"
+ensure_link "${STATE_DIR}/logs"      /tmp/openclaw-logs
 
 # ---- Per-agent session relocation (r5) ----------------------------------------
 
-# ~/.openclaw/agents is symlinked (root phase) to configs/main/agents — the
-# secrets-safe home for the per-agent tree (agents/<id>/agent/ holds the auth
-# store). The episodic record, agents/<id>/sessions/, belongs on the sessions
-# surface instead: symlink each id's sessions/ leaf to
+# agents/ is a real dir in the state dir (configs surface) — the secrets-safe
+# home for the per-agent tree (agents/<id>/agent/ holds the auth store). The
+# episodic record, agents/<id>/sessions/, belongs on the sessions surface
+# instead: symlink each id's sessions/ leaf to
 # ${AGENT_HOME}/sessions/<id>/sessions. Leaf symlinks live ON the configs
-# surface, so they persist across recreates; ln -sfn keeps this idempotent.
+# surface, so they persist across recreates.
 #
 # A sub-agent created mid-run writes sessions into a REAL directory here
 # (still persistent — configs surface) until the next boot places its leaf
-# symlink; that boot moves the contents across to the sessions surface first.
-AGENTS_DIR="${AGENT_HOME}/configs/main/agents"
+# symlink; ensure_link moves the contents across to the sessions surface
+# first. The legacy ${STATE_DIR}/sessions path must never exist, or the
+# runtime replays its legacy migration on every recreate.
+AGENTS_DIR="${STATE_DIR}/agents"
 mkdir -p "${AGENTS_DIR}/main"
-
-relocate_sessions_leaf() {
-  local id="$1"
-  local leaf="${AGENTS_DIR}/${id}/sessions"
-  local target="${AGENT_HOME}/sessions/${id}/sessions"
-  mkdir -p "${target}"
-  if [ -d "${leaf}" ] && [ ! -L "${leaf}" ]; then
-    if [ -n "$(ls -A "${leaf}" 2>/dev/null)" ]; then
-      log "relocating ${leaf} contents to ${target} (one-time, cross-surface)"
-      (shopt -s dotglob; mv "${leaf}"/* "${target}/") \
-        || die 4 "session leaf relocation failed for agent id '${id}'"
-    fi
-    rmdir "${leaf}"
-  fi
-  ln -sfn "${target}" "${leaf}"
-}
 
 for agent_dir in "${AGENTS_DIR}"/*/; do
   [ -d "${agent_dir}" ] || continue
-  relocate_sessions_leaf "$(basename "${agent_dir}")"
+  id="$(basename "${agent_dir}")"
+  mkdir -p "${AGENT_HOME}/sessions/${id}/sessions"
+  ensure_link "${AGENTS_DIR}/${id}/sessions" "${AGENT_HOME}/sessions/${id}/sessions"
 done
 
 # ---- Validate openclaw.json -------------------------------------------------

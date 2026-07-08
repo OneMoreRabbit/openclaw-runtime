@@ -77,65 +77,43 @@ fi
 
 chown -R "${AGENT_UID}:${AGENT_PRIMARY_GID}" /home/agent
 
-# ---- 3. Path relocation symlinks --------------------------------------------
+# ---- 3. State-dir placement (r6) ---------------------------------------------
 
-# Creating a symlink does not read its target, so this is safe as root even
-# though the targets live on the (root-squashed) surface mounts.
+# r1–r5 kept the state dir container-local (~/.openclaw) and relocated
+# individual entries to the surfaces with per-path symlinks. That model died
+# by three cuts, all symlink casualties:
+#   - r5: the 2026.6.x legacy session migration rename()d across a symlink
+#     boundary (EXDEV);
+#   - r6 (as filed): plugin code under npm/ was the one writable left
+#     unrelocated — ephemeral code, persistent registration, crash-loop;
+#   - r6 (addendum): the runtime REFUSES to write exec-approvals.json via a
+#     symlink at all ("Refusing to write exec approvals via symlink", live on
+#     agent_top_zaph 2026-07-08) — a per-file symlink can never work there,
+#     and the wrapper cannot add bind mounts.
+#
+# So r6 inverts the model: OPENCLAW_STATE_DIR points directly at the configs
+# surface (0700, never synced, never ingested). Every state-dir entry —
+# openclaw.json, exec-approvals.json, state/, credentials/, agents/, npm/,
+# and anything a future runtime adds — is a REAL file/dir on secrets-safe
+# persistent storage, no symlink in the final component. The on-surface
+# layout is IDENTICAL to what r4/r5 produced (configs/main/{openclaw.json,
+# state,credentials,agents,npm}), so existing deployments carry over with no
+# data migration. Only the entries that belong on OTHER surfaces remain
+# symlinks (workspace/memory/scratch/logs + the r5 per-id session leaves) —
+# those live ON the surface now and are placed by agent-run.sh as AGENT_UID
+# (root_squash: root cannot create symlinks on the export).
+#
+# OPENCLAW_STATE_DIR (r2) also keeps discovery independent of uid, $HOME,
+# and gosu (a colliding AGENT_UID has no /home/agent passwd home — openclaw
+# would exit 78 "Missing config"). Exported so it survives the gosu hand-off.
+export OPENCLAW_STATE_DIR="${AGENT_HOME}/configs/main"
 
+# Kept (empty) so any residual hardcoded ~/.openclaw path fails soft rather
+# than on a missing home; the probe's relocation-candidate summary will
+# surface any runtime write that lands here.
 HOME_OC="/home/agent/.openclaw"
 mkdir -p "${HOME_OC}"
-
-ln -sfn "${AGENT_HOME}/configs/main/openclaw.json"       "${HOME_OC}/openclaw.json"
-ln -sfn "${AGENT_HOME}/configs/main/exec-approvals.json" "${HOME_OC}/exec-approvals.json"
-ln -sfn "${AGENT_HOME}/memory/main/workspace"            "${HOME_OC}/workspace"
-ln -sfn "${AGENT_HOME}/memory/main/openclaw_memory"      "${HOME_OC}/memory"
-ln -sfn "${AGENT_HOME}/scratch/main"                     "${HOME_OC}/scratch"
-
-# r5: the 2026.6.x runtime keeps a per-agent tree ~/.openclaw/agents/<id>/ and
-# treats a populated ~/.openclaw/sessions/ as legacy (it rename()s the files
-# into agents/main/sessions/ — EXDEV across a symlink boundary, see CHANGELOG).
-# The agents/ tree holds SECRETS (agents/<id>/agent/openclaw-agent.sqlite —
-# OAuth tokens, API-key auth), so the whole tree relocates to the CONFIGS
-# surface (0700, never synced, never ingested): anything the runtime adds
-# under agents/ defaults to secrets-safe persistence. Only the episodic
-# record — agents/<id>/sessions/ — belongs on the sessions surface;
-# agent-run.sh symlinks those leaves out per id (surface writes need
-# AGENT_UID under root_squash). The legacy ~/.openclaw/sessions symlink is
-# gone on purpose: the path must not exist, or the runtime replays its legacy
-# migration on every recreate.
-ln -sfn "${AGENT_HOME}/configs/main/agents"              "${HOME_OC}/agents"
-
-# r6: `openclaw plugins install` (2026.6.x pluginised providers/channels)
-# fetches plugin code into ~/.openclaw/npm/projects/<pkg>-<hash>. The install
-# is REGISTERED in openclaw.json (configs surface, persistent) while the code
-# itself was container-ephemeral — on recreate the gateway crash-loops on the
-# now-invalid config ("provider is not available"). Plugin code is
-# agent-scoped runtime state and secrets-adjacent (project dirs can embed
-# tokens), so it joins state/credentials/agents on the configs surface. The
-# symlink keeps install/registration paths stable across recreates; the
-# openclaw peerDependency link inside each project targets
-# /usr/local/lib/node_modules/openclaw, present in every wrapper image.
-ln -sfn "${AGENT_HOME}/configs/main/npm"                 "${HOME_OC}/npm"
-
-# r4: openclaw also writes ~/.openclaw/state/ (sqlite runtime state, upstream
-# 2026.6.x+) and ~/.openclaw/credentials/ (channel auth — e.g. the WhatsApp
-# Baileys pairing session). Unrelocated, both die with the container on every
-# recreate — re-pairing WhatsApp each deploy. They are secret-bearing runtime
-# state, so they live on the configs surface (0700, never synced, never
-# ingested) beside exec-approvals.json.
-ln -sfn "${AGENT_HOME}/configs/main/state"               "${HOME_OC}/state"
-ln -sfn "${AGENT_HOME}/configs/main/credentials"         "${HOME_OC}/credentials"
-
-chown -h "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}"/* || true
-chown    "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}"   || true
-
-# Pin openclaw's state directory explicitly. Without this, openclaw derives
-# its state root from $HOME, which gosu sets from the agent uid's passwd entry
-# — and if AGENT_UID collides with a pre-existing account (no /home/agent home
-# registered) openclaw looks in the wrong place and exits 78 "Missing config".
-# OPENCLAW_STATE_DIR makes discovery independent of uid, $HOME, and gosu.
-# Exported so it survives the gosu hand-off to agent-run.sh.
-export OPENCLAW_STATE_DIR="${HOME_OC}"
+chown "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}" || true
 
 # ---- 4. Drop privileges; hand off to the agent phase ------------------------
 

@@ -4,6 +4,41 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## r7 — 2026-07-08
+
+**Feature: channel/provider plugins bake into the image at build time.**
+
+r6 made surface-installed plugins persistent, and it holds for small
+packages (brave). But npm-scale many-small-file work against the NFS
+configs surface is pathological: `@openclaw/whatsapp` and
+`@openclaw/discord` installs failed — first via the /tmp→NFS staging move
+(EXDEV-class, no copy fallback), then, with `TMPDIR` on the surface, via
+the fixed 120s extract timeout. Decision: the standard plugin set ships in
+the image.
+
+- New `BAKED_PLUGINS` build ARG: space-separated **pinned** npm specs
+  (`@openclaw/whatsapp@2026.6.11 …`), supplied by image-compile from the
+  flavour config, versions locked to the upstream (lockstep releases).
+  Unpinned specs fail the build.
+- Each spec installs at build time into `/opt/openclaw-plugins/<id>/`
+  (`<id>` = package basename minus any `-plugin` suffix: `brave`,
+  `whatsapp`, `discord`, `perplexity`) in the same npm-project shape
+  `openclaw plugins install` produces: `package.json`, `node_modules/`,
+  and a peer link `node_modules/openclaw →
+  /usr/local/lib/node_modules/openclaw`.
+- **Baked ≠ enabled.** Plugin code is inert until per-agent config enables
+  it (like the disabled stock plugins). Discovery is plain config —
+  `plugins.load.paths: ["/opt/openclaw-plugins/<id>", …]` — emitted by
+  image-compile's probe stub so the captured defaults bundle carries it;
+  enablement stays per-agent (`plugins.entries.<id>.enabled`, channel
+  config). No install verb at runtime; recreate-stable by construction.
+- The r6 `npm/` surface relocation stays — still correct for small ad-hoc
+  plugins. Boundary evidence for the size caveat: staging-move failure,
+  then `extract tar timed out after 120000ms` with
+  `TMPDIR=/agent/configs/main/tmp` honoured.
+
+Exit codes unchanged; entrypoint/agent-run untouched.
+
 ## r6 — 2026-07-08 (amended same day; no r6 image was built from the earlier entry)
 
 **Restructure: `OPENCLAW_STATE_DIR` now points directly at the configs

@@ -23,6 +23,34 @@ RUN set -eux; \
 
 RUN npm install -g openclaw@${OPENCLAW_VERSION}
 
+# r7: bake channel/provider plugins into the image at BUILD time, where tmp
+# and disk are local and fast — npm-scale many-small-file work against the
+# NFS configs surface is pathological (staging-move EXDEV, 120s extract
+# timeout). Each spec MUST be pinned (`@openclaw/whatsapp@2026.6.11`); the
+# project shape mirrors what `openclaw plugins install` produces:
+# package.json + node_modules + a peer link to the global openclaw install.
+# Baked ≠ enabled: plugins are inert until per-agent config enables them
+# (discovery via plugins.load.paths → /opt/openclaw-plugins/<id>).
+ARG BAKED_PLUGINS=""
+RUN set -eux; \
+    if [ -n "${BAKED_PLUGINS}" ]; then \
+      for spec in ${BAKED_PLUGINS}; do \
+        name="${spec%@*}"; \
+        if [ -z "${name}" ] || [ "${name}" = "${spec}" ]; then \
+          echo "BAKED_PLUGINS entries must be pinned name@version specs (got: ${spec})" >&2; \
+          exit 1; \
+        fi; \
+        base="${name##*/}"; \
+        id="${base%-plugin}"; \
+        dir="/opt/openclaw-plugins/${id}"; \
+        mkdir -p "${dir}"; \
+        cd "${dir}"; \
+        printf '{"name":"openclaw-%s-plugin-project","private":true}\n' "${id}" > package.json; \
+        npm install --omit=dev --no-audit --no-fund "${spec}"; \
+        ln -sfn /usr/local/lib/node_modules/openclaw node_modules/openclaw; \
+      done; \
+    fi
+
 RUN mkdir -p /opt/wrapper /home/agent /agent/configs /agent/memory /agent/sessions /agent/scratch \
  && chmod 0755 /home/agent
 

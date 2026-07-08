@@ -4,6 +4,47 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## r6 — 2026-07-08
+
+**Fix: the plugin root `~/.openclaw/npm/` now persists on the configs
+surface.**
+
+2026.6.x pluginises providers and channels beyond the stock set (`brave`,
+`whatsapp`, `discord` are npm-fetched via `openclaw plugins install`).
+Plugin code lands under `$OPENCLAW_STATE_DIR/npm/projects/<pkg>-<hash>` —
+the one state-dir writable r1–r5 did not relocate, so it was
+container-ephemeral. Worse than loss: the install is *registered* in
+`openclaw.json` (configs surface, persistent), so on recreate the config
+references code that no longer exists and the gateway crash-loops
+(`tools.web.search.provider: web_search provider is not available: brave`).
+
+- `entrypoint.sh` (root phase): `npm → ${AGENT_HOME}/configs/main/npm`.
+  Plugin code is agent-scoped runtime state, version-recorded in config,
+  and secrets-adjacent (project dirs can embed tokens) → configs surface
+  (0700, never synced, never ingested), consistent with
+  state/credentials/agents. The symlink preserves absolute
+  install/registration paths across recreates.
+- `agent-run.sh` (agent phase): `mkdir -p` of the target, as `AGENT_UID`
+  (root_squash rule).
+
+The `openclaw` peerDependency symlink inside each plugin project targets
+`/usr/local/lib/node_modules/openclaw` — present in every wrapper image, so
+installed plugins survive image upgrades (re-install only on
+upstream-compat breaks).
+
+**Migration note:** plugins installed on r5 or earlier are gone (they were
+ephemeral); if their registration lingers in `openclaw.json`, the gateway
+will not start until the plugin is reinstalled once on r6 (files then land
+on the surface) or the registration is removed.
+
+**`logs/` considered and left ephemeral** (brief item 4): `docker logs` is
+the diagnostic surface, the probe captures container logs on failure, and
+persisting chatty log writes to NFS adds load and a potential
+secrets-in-logs exposure for no operational gain. Revisit only if a debug
+scenario needs post-mortem logs across recreates.
+
+Exit codes unchanged.
+
 ## r5 — 2026-07-08
 
 **Fix: session relocation matches the 2026.6.x per-agent layout; auth store

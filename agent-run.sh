@@ -33,10 +33,13 @@ done
 
 # ---- Ensure relocation targets exist (r4) ------------------------------------
 
-# Targets of the state/credentials symlinks created in the root phase. Must be
-# created here, as AGENT_UID: under a root_squash export the container's root
-# cannot mkdir on the surface. Idempotent on every start.
-mkdir -p "${AGENT_HOME}/configs/main/state" "${AGENT_HOME}/configs/main/credentials"
+# Targets of the state/credentials (r4) and plugin-root (r6) symlinks created
+# in the root phase. Must be created here, as AGENT_UID: under a root_squash
+# export the container's root cannot mkdir on the surface. Idempotent on
+# every start.
+mkdir -p "${AGENT_HOME}/configs/main/state" \
+         "${AGENT_HOME}/configs/main/credentials" \
+         "${AGENT_HOME}/configs/main/npm"
 
 # ---- Per-agent session relocation (r5) ----------------------------------------
 

@@ -105,6 +105,18 @@ ln -sfn "${AGENT_HOME}/scratch/main"                     "${HOME_OC}/scratch"
 # migration on every recreate.
 ln -sfn "${AGENT_HOME}/configs/main/agents"              "${HOME_OC}/agents"
 
+# r6: `openclaw plugins install` (2026.6.x pluginised providers/channels)
+# fetches plugin code into ~/.openclaw/npm/projects/<pkg>-<hash>. The install
+# is REGISTERED in openclaw.json (configs surface, persistent) while the code
+# itself was container-ephemeral — on recreate the gateway crash-loops on the
+# now-invalid config ("provider is not available"). Plugin code is
+# agent-scoped runtime state and secrets-adjacent (project dirs can embed
+# tokens), so it joins state/credentials/agents on the configs surface. The
+# symlink keeps install/registration paths stable across recreates; the
+# openclaw peerDependency link inside each project targets
+# /usr/local/lib/node_modules/openclaw, present in every wrapper image.
+ln -sfn "${AGENT_HOME}/configs/main/npm"                 "${HOME_OC}/npm"
+
 # r4: openclaw also writes ~/.openclaw/state/ (sqlite runtime state, upstream
 # 2026.6.x+) and ~/.openclaw/credentials/ (channel auth — e.g. the WhatsApp
 # Baileys pairing session). Unrelocated, both die with the container on every

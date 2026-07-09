@@ -4,6 +4,44 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## r8.1 — 2026-07-09
+
+**Fix: bundled plugins' manifest specifiers normalise to built files at
+bake time.**
+
+`2026.6.11-r8` probed green but failed at template test, in channel start —
+a path the probe didn't exercise: `[channels] failed to load
+persistedAuthState checker for whatsapp: plugin module path escapes plugin
+root or fails alias checks`. Root cause (full evidence chain in the r8
+brief's r8.1 addendum): npm-published plugins declare SOURCE-form
+specifiers in their `openclaw` block (`extensions: ["./index.ts"]`,
+`channel.persistedAuthState.specifier: "./auth-presence"`) that only the
+runtime installer's alias table bridges to the built files; a
+directory-scanned bundled record has no alias table. The npm form assumes
+the installer; the in-tree stock form assumes prebuilt flatness; r8
+shipped a third shape satisfying neither.
+
+- New `normalize-plugin-manifest.js`, run per plugin at bake time after
+  extraction: rewrites every relative specifier in the `openclaw` block to
+  its built equivalent (`./index.ts → ./dist/index.js`,
+  `./auth-presence → ./dist/auth-presence.js`; already-built specifiers
+  like `./dist/setup-entry.js` are left alone), so every specifier
+  resolves as a plain in-root path — no alias layer needed.
+- **Guard: unresolved specifiers fail the build.** An upstream renaming
+  its built files breaks the bake, never a channel start.
+- Companion (image-compile): the probe now boots the stub with one channel
+  ENABLED (`channel_start_check`, dummy policy) so channel start is
+  exercised, and fails the build on any plugin LOAD error in the logs
+  (`pushPluginLoadError` / "escapes plugin root" / "alias checks").
+  Load success only — stub creds can never connect. The injected channel
+  block is scrubbed from the captured bundle config.
+
+r8 was pushed to GHCR, so this mints **r8.1** rather than rebuilding the
+r8 tag in place (same-tag-different-content is the r3 incident class).
+No live agent ever ran r8; zaph stays on r7 until r8.1.
+
+Exit codes unchanged; entrypoint/agent-run untouched.
+
 ## r8 — 2026-07-09
 
 **Fix: baked plugins land as BUNDLED stock extensions, not out-of-tree.**

@@ -4,6 +4,48 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## r8 — 2026-07-09
+
+**Fix: baked plugins land as BUNDLED stock extensions, not out-of-tree.**
+
+r7's `/opt/openclaw-plugins` + `plugins.load.paths` bake loaded plugins,
+but 2026.6.x gates security-sensitive plugin APIs on provenance. Live on
+`agent_top_zaph`: WhatsApp paired (`linked`) but the provider died with
+`openKeyedStore is only available for trusted plugins in this release` —
+the shipped runtime's gate reads
+`if (record?.origin !== "bundled" && record?.trustedOfficialInstall !== true) throw`.
+`trustedOfficialInstall` is only written by the runtime's own installer
+(impractical on an NFS state dir; hand-setting an undocumented flag is
+fragile across upstreams). `origin === "bundled"` is the durable route.
+Two more r7 symptoms shared the out-of-tree root and dissolve with it: the
+CLI lane not recognising baked plugins (`Install WhatsApp plugin?` prompt)
+and the `duplicate plugin id` warning from double discovery.
+
+- `BAKED_PLUGINS` packages now extract (`npm pack`) into the runtime's
+  stock extensions root
+  `/usr/local/lib/node_modules/openclaw/dist/extensions/<id>/`, each with
+  its own production `node_modules` (`require('openclaw')` resolves by
+  walking up to `/usr/local/lib/node_modules`).
+- **No path config at all**: image-compile stops emitting
+  `plugins.load.paths` (the r7 mechanism). Enablement is unchanged —
+  per-agent config, same knobs as stock plugins.
+- **Collision guard**: the build FAILS if `dist/extensions/<id>` already
+  exists — an upstream shipping a same-named stock plugin is a conscious
+  reconciliation, never a clobber.
+- **Layout assertion** (image-compile probe): `dist/extensions/` is
+  upstream-internal, not a published interface. The probe asserts every
+  baked id appears under the stock source root in `plugins list` and that
+  no duplicate-id warning is logged — an upstream layout change fails the
+  build, not a deployed agent.
+
+**Upstream-upgrade caveat:** `dist/` is replaced whenever the upstream
+version bumps. That is by design — the bake re-runs on every image build —
+but do not expect plugins to survive an in-container `npm upgrade`
+(unsupported on this platform anyway; images are immutable, rebuilds are
+the upgrade path).
+
+Exit codes unchanged; entrypoint/agent-run untouched.
+
 ## r7 — 2026-07-08
 
 **Feature: channel/provider plugins bake into the image at build time.**

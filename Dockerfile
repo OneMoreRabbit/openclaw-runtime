@@ -23,17 +23,31 @@ RUN set -eux; \
 
 RUN npm install -g openclaw@${OPENCLAW_VERSION}
 
-# r7: bake channel/provider plugins into the image at BUILD time, where tmp
-# and disk are local and fast — npm-scale many-small-file work against the
-# NFS configs surface is pathological (staging-move EXDEV, 120s extract
-# timeout). Each spec MUST be pinned (`@openclaw/whatsapp@2026.6.11`); the
-# project shape mirrors what `openclaw plugins install` produces:
-# package.json + node_modules + a peer link to the global openclaw install.
-# Baked ≠ enabled: plugins are inert until per-agent config enables them
-# (discovery via plugins.load.paths → /opt/openclaw-plugins/<id>).
+# r8 (supersedes r7's /opt/openclaw-plugins bake): plugins bake as BUNDLED
+# extensions in the runtime's stock root, because 2026.6.x gates
+# security-sensitive plugin APIs on provenance — `openKeyedStore is only
+# available for trusted plugins` unless origin === "bundled" (or the
+# runtime's own installer wrote trustedOfficialInstall, impractical on an
+# NFS state dir). Bundled also fixes CLI recognition and kills the r7
+# duplicate-discovery warning; no path config is needed at all.
+#
+# Each spec MUST be pinned (`@openclaw/whatsapp@2026.6.11`). The package is
+# extracted (npm pack) into dist/extensions/<id>/ with its own production
+# node_modules; `require('openclaw')` resolves by walking up to
+# /usr/local/lib/node_modules. Baked ≠ enabled: inert until per-agent
+# config enables them, exactly like the disabled stock plugins.
+#
+# Collision guard: if an upstream ever ships a stock plugin with the same
+# id, the build FAILS — reconciling that is a conscious decision, never a
+# clobber. NOTE: dist/extensions is upstream-internal, not a published
+# interface; image-compile's probe asserts each baked id appears under the
+# stock source root in `plugins list`, so an upstream layout change fails
+# the build, not a deployed agent.
 ARG BAKED_PLUGINS=""
 RUN set -eux; \
     if [ -n "${BAKED_PLUGINS}" ]; then \
+      EXT_ROOT="/usr/local/lib/node_modules/openclaw/dist/extensions"; \
+      mkdir -p "${EXT_ROOT}"; \
       for spec in ${BAKED_PLUGINS}; do \
         name="${spec%@*}"; \
         if [ -z "${name}" ] || [ "${name}" = "${spec}" ]; then \
@@ -42,12 +56,21 @@ RUN set -eux; \
         fi; \
         base="${name##*/}"; \
         id="${base%-plugin}"; \
-        dir="/opt/openclaw-plugins/${id}"; \
-        mkdir -p "${dir}"; \
-        cd "${dir}"; \
-        printf '{"name":"openclaw-%s-plugin-project","private":true}\n' "${id}" > package.json; \
-        npm install --omit=dev --no-audit --no-fund "${spec}"; \
-        ln -sfn /usr/local/lib/node_modules/openclaw node_modules/openclaw; \
+        dest="${EXT_ROOT}/${id}"; \
+        if [ -e "${dest}" ]; then \
+          echo "collision: ${dest} already exists — upstream now ships a stock '${id}'?" >&2; \
+          echo "Reconcile deliberately (drop it from baked_plugins or rename); refusing to clobber." >&2; \
+          exit 1; \
+        fi; \
+        staging="$(mktemp -d)"; \
+        cd "${staging}"; \
+        npm pack "${spec}" >/dev/null; \
+        tar -xzf ./*.tgz; \
+        mkdir -p "${dest}"; \
+        cp -a package/. "${dest}/"; \
+        cd "${dest}"; \
+        npm install --omit=dev --no-audit --no-fund; \
+        rm -rf "${staging}"; \
       done; \
     fi
 

@@ -1,3 +1,7 @@
 examples/surfaces/
 *.log
 .DS_Store
+# --- Atlas ---
+.atlas/
+.atlas-method/
+ATLAS-CONTEXT.md

@@ -43,6 +43,15 @@ RUN npm install -g openclaw@${OPENCLAW_VERSION}
 # interface; image-compile's probe asserts each baked id appears under the
 # stock source root in `plugins list`, so an upstream layout change fails
 # the build, not a deployed agent.
+#
+# r8.1: after extraction, the plugin's `openclaw` manifest block is
+# normalised — npm-published plugins declare SOURCE-form specifiers
+# ("./index.ts", "./auth-presence") that only the runtime installer's alias
+# table can bridge; a bundled record has none, so channel submodule loads
+# fail ("escapes plugin root or fails alias checks"). The normaliser
+# rewrites each specifier to the actual built file and FAILS the build if
+# no built equivalent exists.
+COPY normalize-plugin-manifest.js /opt/wrapper/
 ARG BAKED_PLUGINS=""
 RUN set -eux; \
     if [ -n "${BAKED_PLUGINS}" ]; then \
@@ -70,6 +79,7 @@ RUN set -eux; \
         cp -a package/. "${dest}/"; \
         cd "${dest}"; \
         npm install --omit=dev --no-audit --no-fund; \
+        node /opt/wrapper/normalize-plugin-manifest.js "${dest}"; \
         rm -rf "${staging}"; \
       done; \
     fi

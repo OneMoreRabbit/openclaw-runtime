@@ -11,10 +11,18 @@ sibling repos with the same shape.
 
 The wrapper image is fully described in:
 
-- [openclaw-image-architecture-v0_2.md](../integrations/openclaw-image-architecture-v0_2.md) — design contract: mounts, identity, symlink relocation, exit codes.
-- [openclaw-image-build-process-v0_2.md](../integrations/openclaw-image-build-process-v0_2.md) — how versions are pinned, tagged, smoke-tested, published.
+Design docs live in the **Atlas-AgentEco** vault, not in this repo (constitution principle 3:
+one home each). Paths are relative to the vault root; this seat syncs it to `.atlas/`.
 
-The build, probe, and registry pairing is owned by `image-compile` ([brief](../integrations/image-compile-build-brief-v0_1.md), [amendments](../docs/image-compile-brief-amendments-v0_1.md)).
+- `components/agent-image/docs/openclaw-image-architecture-v0_2.md` — design contract: mounts, identity, symlink relocation, exit codes.
+- `components/agent-image/docs/manual/openclaw-image-build-process-v0_2.md` — how versions are pinned, tagged, smoke-tested, published.
+- `components/agent-image/docs/provides/openclaw-image-platform-handover-v0_3.md` — the deployment contract, current as of ADR-0010.
+
+The previous links pointed at `../integrations/`, a sibling directory that has not existed
+since the pre-vault migration.
+
+The build, probe, and registry pairing is owned by `image-compile` — the other repo of this
+component.
 
 ## Build (manual, for development)
 
@@ -45,7 +53,7 @@ minimal openclaw.json, and runs the wrapper at a non-privileged UID/GID. Expecte
 ## Exit codes
 
 The entrypoint uses exit codes 3–7; the upstream openclaw binary uses anything above. See
-[architecture doc §Entrypoint behaviour](../integrations/openclaw-image-architecture-v0_2.md) for
+the architecture doc §Entrypoint behaviour (vault, path above) for
 the full table.
 
 ## Status

@@ -4,6 +4,26 @@ Wrapper revisions. The `r<rev>` suffix in an image tag (`<upstream>-r<rev>`)
 bumps when the wrapper changes without the upstream OpenClaw version moving.
 Images built *after* a given entry should use that entry's revision.
 
+## Two numbers, two jobs — do not read them as one
+
+This repo carries **two independent version schemes**. They are not the same
+number and neither derives from the other:
+
+| Number | Shape | What it versions | Where it appears |
+|---|---|---|---|
+| **Repo release** | `vX.Y.Z` | this git repository's release line | git tags, `main` |
+| **Wrapper revision** | `<upstream>-r<rev>` | a wrapper build against one upstream OpenClaw version | image tags, e.g. `2026.6.11-r8.1` |
+
+The repo release tag is `vX.Y.Z` estate-wide (operator ruling, 2026-09-13) so
+that every consumer, pin and audit across AgentEco reads the same shape. The
+first such tag is **`v0.8.0`**, cut at wrapper revision **r8.1**.
+
+**`r<rev>` is retired as a *release* scheme only.** It keeps doing the job it is
+good at: describing which wrapper build pairs with which upstream OpenClaw
+version, which is an image-tag concern the release number cannot express. The
+entries below continue to be organised by wrapper revision, and
+`image-compile build openclaw <version> --wrapper-rev rN` is unchanged.
+
 ## r8.1 — 2026-07-09
 
 **Fix: bundled plugins' manifest specifiers normalise to built files at

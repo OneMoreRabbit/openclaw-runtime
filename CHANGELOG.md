@@ -24,6 +24,46 @@ version, which is an image-tag concern the release number cannot express. The
 entries below continue to be organised by wrapper revision, and
 `image-compile build openclaw <version> --wrapper-rev rN` is unchanged.
 
+## r9 — 2026-09-18
+
+**Fix: supplementary groups now reach the agent process; the uid-collision
+warning stops accusing the mechanism it does not break.**
+
+Three changes, one cause between them — `AGENT_SUPP_GIDS` was honoured on disk
+and discarded at the privilege hand-off.
+
+**1. Implicit `gosu`.** The drop was `gosu "${AGENT_UID}:${AGENT_PRIMARY_GID}"`.
+gosu resolves user specs with Docker's own code, where the supplementary set is
+populated **only** when the group is not named — *"Supplementary group ids only
+make sense if in the implicit form"* (`moby/sys/user`, `GetExecUser`). So every
+gid attached by `usermod -G` above was dropped at that line: `/etc/group` was
+correct and the process credentials were not. Now `gosu "${AGENT_UID}"`.
+
+**2. A primary-gid assertion.** The explicit form was load-bearing in one
+respect — it forced the right primary gid even when passwd's entry belongs to an
+account the image does not own. That is now an explicit check that **dies**
+rather than a side effect, so an agent can no longer start under the wrong
+primary group and stamp it on every file it creates.
+
+**3. The collision warning, corrected.** It conflated two different facts:
+
+- *our own* account from an earlier start of the same container — `/etc/passwd`
+  persists across `docker restart`, so every start after the first landed here.
+  Name `agent`, home `/home/agent`: exactly what this entrypoint creates. Now a
+  plain informational line.
+- a *genuine* collision with an account the image does not own. Still warns, and
+  now says the truth: supplementary groups **are** still applied.
+
+The pre-r9 text claimed *"supplementary groups may not apply"* on both paths. On
+the only path seen in practice that was false — the supp-group block sits outside
+the branch and `usermod` resolves by uid — and it pointed at the one mechanism
+the estate's access model depends on.
+
+Verified by `image-compile` guard 9, which requests supplementary gids in the
+probe (it passed them empty from the first revision, which is why this was
+invisible) and asserts them present in the agent process's `/proc/<pid>/status`.
+The guard fails on r8.1 and passes on r9.
+
 ## r8.1 — 2026-07-09
 
 **Fix: bundled plugins' manifest specifiers normalise to built files at

@@ -45,20 +45,43 @@ if ! getent group "${AGENT_PRIMARY_GID}" >/dev/null; then
   groupadd -g "${AGENT_PRIMARY_GID}" agent || die 6 "groupadd failed"
 fi
 
+# r9: does this uid belong to an account THIS image provisioned? Decides which
+# privilege-drop form is safe below.
+AGENT_ACCOUNT_IS_OURS=yes
+
 if ! getent passwd "${AGENT_UID}" >/dev/null; then
   useradd -u "${AGENT_UID}" -g "${AGENT_PRIMARY_GID}" -d /home/agent -s /usr/sbin/nologin -M agent \
     || die 6 "useradd failed"
 else
-  # AGENT_UID collides with an account already in the base image (e.g. `node`
-  # at 1000, `nobody` at 65534). useradd is skipped, so no /home/agent home is
-  # registered for this uid. State discovery still works because we export
-  # OPENCLAW_STATE_DIR below — but supplementary-group attachment may target
-  # the wrong account. Warn loudly; don't block (the probe legitimately runs
-  # as the operator's own uid, which can collide).
+  # An account already holds AGENT_UID. r9: distinguish the two cases, because
+  # they are not the same fact and the old warning conflated them.
+  #
+  # (a) OUR OWN, from an earlier start of this container. /etc/passwd persists
+  #     across `docker restart`, so every start after the first lands here. The
+  #     account is exactly what the useradd above creates: name `agent`, home
+  #     `/home/agent`. Nothing is wrong and nothing is skipped that matters --
+  #     the supplementary-group block below is outside this branch and still
+  #     runs, and usermod resolves its target by uid.
+  #
+  # (b) A GENUINE collision with a different account (e.g. `node` at 1000).
+  #     Identity provisioning really is skipped for an account we do not own.
+  #
+  # The pre-r9 warning claimed "supplementary groups may not apply" on BOTH
+  # paths. On (a) -- the only one seen in practice -- that is false, and it
+  # accused the one mechanism the estate's access model depends on.
   existing="$(getent passwd "${AGENT_UID}" | cut -d: -f1,6)"
-  log "WARNING: AGENT_UID ${AGENT_UID} matches pre-existing account '${existing%%:*}'" \
-      "(home '${existing##*:}'); identity provisioning skipped." \
-      "State discovery handled by OPENCLAW_STATE_DIR; supplementary groups may not apply."
+  existing_name="${existing%%:*}"
+  existing_home="${existing##*:}"
+  if [ "${existing_name}" = "agent" ] && [ "${existing_home}" = "/home/agent" ]; then
+    log "uid ${AGENT_UID} already provisioned as 'agent' by an earlier start of" \
+        "this container; reusing it. Groups are re-applied below."
+  else
+    AGENT_ACCOUNT_IS_OURS=no
+    log "WARNING: AGENT_UID ${AGENT_UID} collides with pre-existing account" \
+        "'${existing_name}' (home '${existing_home}') that this image does not own;" \
+        "useradd skipped. State discovery handled by OPENCLAW_STATE_DIR." \
+        "Supplementary groups will NOT apply to the process on this path."
+  fi
 fi
 
 if [ -n "${AGENT_SUPP_GIDS}" ]; then
@@ -119,4 +142,33 @@ chown "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}" || true
 
 log "dropping to uid=${AGENT_UID} gid=${AGENT_PRIMARY_GID}; handing off to agent-run.sh"
 
-exec gosu "${AGENT_UID}:${AGENT_PRIMARY_GID}" /opt/wrapper/agent-run.sh
+# r9: which gosu form is correct depends on whether we own the account.
+#
+# IMPLICIT ("uid") attaches the supplementary set; EXPLICIT ("uid:gid") does not
+# -- Docker's resolver, which gosu uses, populates supplementary groups only when
+# the group is unnamed. Pre-r9 always used the explicit form, so every gid
+# attached by `usermod -G` was discarded here.
+#
+# When the account is OURS, passwd already carries AGENT_PRIMARY_GID, so the
+# implicit form gives the right primary gid AND the supplementary set. The
+# assertion below should therefore never fire; it is a cheap guard against a
+# future change to the provisioning above.
+#
+# On a GENUINE collision we do not own the account, and passwd's primary gid is
+# somebody else's. The implicit form would silently run the agent under the wrong
+# primary group -- worse than losing the supplementary set -- so we keep the
+# explicit form and say plainly what it costs. This is the path the probe takes
+# on a shared build host whose operator uid collides with a base-image account,
+# which is why it must not be fatal.
+if [ "${AGENT_ACCOUNT_IS_OURS}" = "yes" ]; then
+  resolved_gid="$(id -g "${AGENT_UID}")" \
+    || die 6 "cannot resolve primary gid for uid ${AGENT_UID}"
+  if [ "${resolved_gid}" != "${AGENT_PRIMARY_GID}" ]; then
+    die 6 "uid ${AGENT_UID} is ours but resolves to primary gid ${resolved_gid}, not \
+the requested ${AGENT_PRIMARY_GID}. Refusing to start: the agent would run under the \
+wrong primary group and stamp it on every file it creates."
+  fi
+  exec gosu "${AGENT_UID}" /opt/wrapper/agent-run.sh
+else
+  exec gosu "${AGENT_UID}:${AGENT_PRIMARY_GID}" /opt/wrapper/agent-run.sh
+fi

@@ -40,6 +40,14 @@ done
 STATE_DIR="${AGENT_HOME}/configs/main"
 mkdir -p "${STATE_DIR}/state" "${STATE_DIR}/credentials" "${STATE_DIR}/npm"
 
+# r10.2: the ssh directory lives on the configs surface so a deployer-placed
+# authorized_keys survives a container recreate. Created HERE, as the agent,
+# because root cannot create on a root_squash export -- the same reason the
+# surface symlinks below are placed in this phase rather than the root one.
+# 0700 also keeps sshd's StrictModes satisfied on the path it will read.
+mkdir -p "${STATE_DIR}/ssh"
+chmod 0700 "${STATE_DIR}/ssh" 2>/dev/null || true
+
 # exec-approvals.json is deliberately NOT seeded: with no symlink in its
 # path the runtime creates and maintains its own file (its refusal was
 # symlink-specific), and seeding a guessed schema risks breaking approvals

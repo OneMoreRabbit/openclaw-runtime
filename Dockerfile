@@ -155,7 +155,16 @@ RUN set -eux; \
 #   * password auth off, root login off, keys only;
 #   * NO authorized_keys is shipped — the file's ABSENCE is the closed door, and
 #     an empty file is a different fact. The deployer places it per agent at
-#     /home/agent/.ssh/authorized_keys (mode 0600, owned by the agent uid).
+#     /agent/configs/main/ssh/authorized_keys (mode 0600, owned by the agent uid).
+#     r10.2 moved it there off /home/agent, which is container-local: a key
+#     placed at deploy time did not survive `compose up`. The configs surface is
+#     the per-agent one that persists.
+#   * StrictModes stays ON (the default; we do not relax it). It requires the
+#     key file to be 0600 and NOT group/other writable, and every directory
+#     above it — /agent, /agent/configs, /agent/configs/main, .../ssh — to be
+#     owned by root or the agent and not group/other writable. /agent is ours
+#     (0755 root). The rest land on the mounted surface, so the modes are the
+#     deployment's to get right, not the image's to loosen.
 #   * NO host keys are baked. Baking them would give every agent container in
 #     the estate the same host identity, so the entrypoint generates them on
 #     first start into the container's own filesystem.
@@ -168,10 +177,15 @@ RUN set -eux; \
       'KbdInteractiveAuthentication no' \
       'PermitRootLogin no' \
       'PubkeyAuthentication yes' \
-      'AuthorizedKeysFile .ssh/authorized_keys' \
+      'AuthorizedKeysFile /agent/configs/main/ssh/authorized_keys' \
       > /etc/ssh/sshd_config.d/10-arcpower.conf; \
     rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub; \
-    rm -f /home/agent/.ssh/authorized_keys
+    for f in /agent/configs/main/ssh/authorized_keys /home/agent/.ssh/authorized_keys; do \
+      if [ -e "${f}" ]; then echo "FATAL: image ships an authorized_keys at ${f}" >&2; exit 1; fi; \
+    done; \
+    if ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then \
+      echo "FATAL: image bakes ssh host keys" >&2; exit 1; \
+    fi
 
 RUN mkdir -p /opt/wrapper /home/agent /agent/configs /agent/memory /agent/sessions /agent/scratch \
  && chmod 0755 /home/agent

@@ -50,7 +50,12 @@ fi
 AGENT_ACCOUNT_IS_OURS=yes
 
 if ! getent passwd "${AGENT_UID}" >/dev/null; then
-  useradd -u "${AGENT_UID}" -g "${AGENT_PRIMARY_GID}" -d /home/agent -s /usr/sbin/nologin -M agent \
+  # r10.2: a real shell. The account was /usr/sbin/nologin, which made D6
+  # unsatisfiable as built -- an image that ships sshd and a nologin shell cannot
+  # be logged into, so a valid key still ended in a refusal. Shipping the door and
+  # withholding the shell is not a security posture, it is a broken one: the
+  # closed state is "no authorized_keys", not "no usable account".
+  useradd -u "${AGENT_UID}" -g "${AGENT_PRIMARY_GID}" -d /home/agent -s /bin/bash -M agent \
     || die 6 "useradd failed"
 else
   # An account already holds AGENT_UID. r9: distinguish the two cases, because
@@ -138,13 +143,14 @@ HOME_OC="/home/agent/.openclaw"
 mkdir -p "${HOME_OC}"
 chown "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}" || true
 
-# ---- 3b. sshd (r10, ADR-0013 D6) --------------------------------------------
+# ---- 3b. sshd (r10, ADR-0013 D6; paths r10.2) --------------------------------
+AGENT_SSH_AUTH_KEYS="${AGENT_HOME}/configs/main/ssh/authorized_keys"
 #
 # Presence is not access. The image ships no authorized_keys and no host keys:
 #
 #   * authorized_keys — the deployer places it per agent. Its ABSENCE is the
-#     closed door; an empty file would be a different fact, so the image creates
-#     the .ssh directory (so a placed file lands correctly) and never the file.
+#     closed door; an empty file would be a different fact, so the agent phase
+#     creates the directory (so a placed file lands correctly), never the file.
 #   * host keys — generated here, on first start, into this container's own
 #     filesystem. Baking them would give every agent container in the estate the
 #     same host identity, which is a worse failure than having none.
@@ -153,12 +159,18 @@ chown "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}" || true
 # hand-off. A failure here must not take the agent down with it: ssh is for
 # inspection, the agent is the job.
 
-install -d -m 0700 -o "${AGENT_UID}" -g "${AGENT_PRIMARY_GID}" /home/agent/.ssh \
-  || log "WARNING: could not prepare /home/agent/.ssh"
-
-if [ ! -f /home/agent/.ssh/authorized_keys ]; then
-  log "no authorized_keys present: ssh is closed until the deployer places one" \
-      "at /home/agent/.ssh/authorized_keys (0600, owned by uid ${AGENT_UID})"
+# r10.2: authorized_keys moves to the CONFIGS SURFACE. /home/agent is
+# container-local, so a key placed at deploy time died at the next
+# `compose up` -- measured by orch on agent_test. The configs surface is where
+# per-agent operational credentials already persist.
+#
+# The directory is NOT created here. Root cannot create or chown on a
+# root_squash export, which is the same constraint that put the surface symlinks
+# in agent-run.sh (r3); the agent phase makes it. sshd does not need it at start
+# -- it reads authorized_keys per connection, and its absence is the closed door.
+if [ ! -f "${AGENT_SSH_AUTH_KEYS}" ]; then
+  log "no authorized_keys at ${AGENT_SSH_AUTH_KEYS}: ssh is closed until the" \
+      "deployer places one there (0600, owned by uid ${AGENT_UID})"
 fi
 
 mkdir -p /run/sshd

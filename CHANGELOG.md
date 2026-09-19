@@ -24,6 +24,37 @@ version, which is an image-tag concern the release number cannot express. The
 entries below continue to be organised by wrapper revision, and
 `image-compile build openclaw <version> --wrapper-rev rN` is unchanged.
 
+## r10.2 — 2026-09-19
+
+Makes D6 actually reachable. r10 shipped sshd, key-gated, against an account
+whose shell was `/usr/sbin/nologin` and whose `authorized_keys` path was on a
+container-local directory. Both were measured on `agent_test`: a correctly
+placed key produced a refusal, and the key itself vanished at the next
+`compose up`. An image that ships a door it cannot open is not a closed door,
+it is a broken one.
+
+- **`AuthorizedKeysFile` → `/agent/configs/main/ssh/authorized_keys`.**
+  `/home/agent` is container-local and does not survive a recreate; the configs
+  surface is the per-agent one that persists. The image still ships **no**
+  authorized_keys and now **asserts** its absence at build time at both the new
+  path and the old, rather than merely `rm -f`-ing it.
+- **The agent account gets `/bin/bash`.** Its absence was what turned a valid
+  key into a refusal. The closed state is "no authorized_keys", not "no usable
+  account".
+- **The `.ssh` directory is created in the agent phase, not the root phase.**
+  Root cannot create or chown on a `root_squash` export — the r3 lesson. sshd
+  does not need it at start; it reads the file per connection.
+- **`StrictModes` is untouched** (on, the default). It constrains the mounted
+  path's ownership and modes, which are the deployment's to set. Not measurable
+  from this seat — see the acceptance note below.
+
+Identity path is otherwise unchanged from r10.1: the gosu branch, the
+`AGENT_ACCOUNT_IS_OURS` determination and the primary-gid assertion are
+byte-identical. The only field touched on the account is the shell.
+
+Acceptance adds: ssh with a placed key yields a **shell** as the agent — uid and
+groups correct in-session — not merely a non-refusal.
+
 ## r10.1 — 2026-09-19
 
 **Fix: the plugin bake wrote to a hardcoded node_modules root that the Ubuntu

@@ -66,6 +66,44 @@ RUN set -eux; \
 
 RUN npm install -g openclaw@${OPENCLAW_VERSION}
 
+# r10.1 — the node_modules root is DERIVED, never hardcoded, and asserted to be
+# unique. The r10 build failed here: the bake wrote the four plugins to a
+# hardcoded /usr/local/lib/node_modules/..., which was correct on the old
+# node:24-bookworm-slim base (official node images install under /usr/local) and
+# is wrong on Ubuntu 24.04 + NodeSource, where npm's prefix is /usr and the
+# runtime resolves from /usr/lib/node_modules. The plugins were present,
+# complete, and invisible to the binary.
+#
+# Verified on Ubuntu 24.04 + NodeSource before fixing, not adopted from the
+# report: `npm config get prefix` -> /usr, `npm root -g` -> /usr/lib/node_modules,
+# and the nodejs deb ships npm itself at /usr/lib/node_modules/npm.
+#
+# The assert is the half that matters. A derived path is still one path; if a
+# second openclaw tree ever appears, deriving silently picks one and the other
+# rots invisibly -- which is exactly the failure this replaces. The probe caught
+# it at build END; this names it where it is made.
+RUN set -eux; \
+    NPM_ROOT="$(npm root -g)"; \
+    echo "npm global root: ${NPM_ROOT}"; \
+    FOUND=""; \
+    for cand in /usr/lib/node_modules /usr/local/lib/node_modules /opt/lib/node_modules; do \
+      if [ -d "${cand}/openclaw" ]; then FOUND="${FOUND} ${cand}/openclaw"; fi; \
+    done; \
+    COUNT="$(echo ${FOUND} | wc -w)"; \
+    if [ "${COUNT}" -ne 1 ]; then \
+      echo "expected exactly one openclaw installation; found ${COUNT}:${FOUND}" >&2; \
+      echo "Two roots means the bake can write to one while the runtime reads the other." >&2; \
+      exit 1; \
+    fi; \
+    if [ ! -d "${NPM_ROOT}/openclaw" ]; then \
+      echo "openclaw is not under npm root ${NPM_ROOT}; found at:${FOUND}" >&2; \
+      echo "The bake derives from npm root, so these must agree." >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /opt/wrapper; \
+    printf '%s\n' "${NPM_ROOT}/openclaw" > /opt/wrapper/openclaw-root; \
+    echo "openclaw root pinned for the bake: $(cat /opt/wrapper/openclaw-root)"
+
 # r8 (supersedes r7's /opt/openclaw-plugins bake): plugins bake as BUNDLED
 # extensions in the runtime's stock root, because 2026.6.x gates
 # security-sensitive plugin APIs on provenance — `openKeyedStore is only
@@ -84,7 +122,7 @@ COPY normalize-plugin-manifest.js /opt/wrapper/
 ARG BAKED_PLUGINS=""
 RUN set -eux; \
     if [ -n "${BAKED_PLUGINS}" ]; then \
-      EXT_ROOT="/usr/local/lib/node_modules/openclaw/dist/extensions"; \
+      EXT_ROOT="$(cat /opt/wrapper/openclaw-root)/dist/extensions"; \
       mkdir -p "${EXT_ROOT}"; \
       for spec in ${BAKED_PLUGINS}; do \
         name="${spec%@*}"; \

@@ -24,6 +24,34 @@ version, which is an image-tag concern the release number cannot express. The
 entries below continue to be organised by wrapper revision, and
 `image-compile build openclaw <version> --wrapper-rev rN` is unchanged.
 
+## r10.1 — 2026-09-19
+
+**Fix: the plugin bake wrote to a hardcoded node_modules root that the Ubuntu
+base does not use.** The r10 build failed its probe on zaphod: the four baked
+plugins were present, complete, and invisible to the binary.
+
+`EXT_ROOT` was hardcoded to `/usr/local/lib/node_modules/openclaw/...`. That was
+correct on `node:24-bookworm-slim` — the official node images install under
+`/usr/local` — and wrong on Ubuntu 24.04 + NodeSource, where npm's prefix is
+`/usr` and the runtime resolves from `/usr/lib/node_modules`. The bake `mkdir -p`'d
+its way into a tree no openclaw installation owned.
+
+**Verified before fixing, not adopted from the report.** On Ubuntu 24.04 with the
+NodeSource `nodejs` package: `npm config get prefix` → `/usr`, `npm root -g` →
+`/usr/lib/node_modules`, and the deb ships npm itself at
+`/usr/lib/node_modules/npm`. (Measured with the user npmrc bypassed — this seat
+carries a `prefix` override that would otherwise have contaminated the reading.)
+
+**Derived, and asserted.** `EXT_ROOT` now comes from `npm root -g`, the same
+mechanism `npm install -g` used to place the package. But a derived path is still
+one path: if a second openclaw tree ever appeared, deriving would silently pick
+one and the other would rot invisibly — which is this defect exactly. So the
+build also **asserts exactly one openclaw installation** across the plausible
+roots and fails naming both if it finds two, and asserts that the one it finds is
+the one under `npm root -g`.
+
+The probe caught this at build END. The assert names it where it is made.
+
 ## r10 — 2026-09-19
 
 **The container becomes a small Ubuntu machine** (ADR-0013). One image line, no

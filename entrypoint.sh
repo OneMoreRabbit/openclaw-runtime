@@ -138,6 +138,43 @@ HOME_OC="/home/agent/.openclaw"
 mkdir -p "${HOME_OC}"
 chown "${AGENT_UID}:${AGENT_PRIMARY_GID}" "${HOME_OC}" || true
 
+# ---- 3b. sshd (r10, ADR-0013 D6) --------------------------------------------
+#
+# Presence is not access. The image ships no authorized_keys and no host keys:
+#
+#   * authorized_keys — the deployer places it per agent. Its ABSENCE is the
+#     closed door; an empty file would be a different fact, so the image creates
+#     the .ssh directory (so a placed file lands correctly) and never the file.
+#   * host keys — generated here, on first start, into this container's own
+#     filesystem. Baking them would give every agent container in the estate the
+#     same host identity, which is a worse failure than having none.
+#
+# sshd runs as root and drops per connection, so it starts before the gosu
+# hand-off. A failure here must not take the agent down with it: ssh is for
+# inspection, the agent is the job.
+
+install -d -m 0700 -o "${AGENT_UID}" -g "${AGENT_PRIMARY_GID}" /home/agent/.ssh \
+  || log "WARNING: could not prepare /home/agent/.ssh"
+
+if [ ! -f /home/agent/.ssh/authorized_keys ]; then
+  log "no authorized_keys present: ssh is closed until the deployer places one" \
+      "at /home/agent/.ssh/authorized_keys (0600, owned by uid ${AGENT_UID})"
+fi
+
+mkdir -p /run/sshd
+if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+  log "generating this container's own ssh host keys"
+  ssh-keygen -A >/dev/null 2>&1 || log "WARNING: ssh-keygen -A failed; sshd may not start"
+fi
+
+if /usr/sbin/sshd -t 2>/dev/null; then
+  /usr/sbin/sshd -D -p "${SSHD_PORT:-22}" &
+  log "sshd started on port ${SSHD_PORT:-22} (keys only; root login off)"
+else
+  log "WARNING: sshd config test failed; continuing without ssh." \
+      "The agent is unaffected; inspection access is not available."
+fi
+
 # ---- 4. Drop privileges; hand off to the agent phase ------------------------
 
 log "dropping to uid=${AGENT_UID} gid=${AGENT_PRIMARY_GID}; handing off to agent-run.sh"

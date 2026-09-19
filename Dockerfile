@@ -1,56 +1,85 @@
 # syntax=docker/dockerfile:1.7
 
 # openclaw-runtime — ARC Power wrapper image for upstream OpenClaw.
+#
+# r10 (ADR-0013): the container is a small Ubuntu machine, not an app wrapper.
+# One image line, no variants. Contents are fixed by D3 of that ADR — a tool
+# not in its table is added by amending the ADR, never by a build arg.
+#
 # Pinned upstream version is passed at build time via OPENCLAW_VERSION (no v prefix).
-# See integrations/openclaw-image-architecture-v0_2.md for the design contract.
+# Design contract: components/agent-image/docs/openclaw-image-architecture-v0_3.md
 
-ARG NODE_BASE=node:24-bookworm-slim
-FROM ${NODE_BASE}
+# D2 — the constitution's platform (principle 6), inside the container as well
+# as outside. Replaces node:24-bookworm-slim.
+ARG UBUNTU_BASE=ubuntu:24.04
+FROM ${UBUNTU_BASE}
 
 ARG OPENCLAW_VERSION
+ARG NODE_MAJOR=24
+
+# D1 — OPENCLAW_VARIANT and OPENCLAW_EXTRA_APT are RETIRED. They were the escape
+# hatch that reintroduced per-agent image drift, which the architecture exists to
+# prevent. A build that passes them should fail loudly rather than ignore them.
+ARG OPENCLAW_VARIANT=""
 ARG OPENCLAW_EXTRA_APT=""
+RUN if [ -n "${OPENCLAW_VARIANT}" ] || [ -n "${OPENCLAW_EXTRA_APT}" ]; then \
+      echo "OPENCLAW_VARIANT and OPENCLAW_EXTRA_APT are retired (ADR-0013 D1)." >&2; \
+      echo "One image line, no variants. Add tools by amending D3, not per build." >&2; \
+      exit 1; \
+    fi
 
 RUN if [ -z "${OPENCLAW_VERSION}" ]; then \
       echo "OPENCLAW_VERSION build arg is required" >&2; exit 1; \
     fi
 
-# gosu is used by the entrypoint to drop privileges to the runtime agent user.
-# tini provides a sane PID 1 inside the container.
+ENV DEBIAN_FRONTEND=noninteractive
+
+# D3 — the contents table, exactly. Nothing else.
+#   python3 / git / curl  the agent's working tools
+#   openssh-server        D6; presence, not access
+#   gosu / tini           identity drop and PID 1, as r9
+#   ca-certificates       TLS for npm and curl
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends gosu tini ca-certificates ${OPENCLAW_EXTRA_APT}; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl git python3 openssh-server gosu tini; \
     rm -rf /var/lib/apt/lists/*
+
+# node 24.x. Ubuntu 24.04 ships an older node, so the pinned major comes from
+# NodeSource. openclaw does not start without it.
+RUN set -eux; \
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" -o /tmp/nodesource_setup.sh; \
+    bash /tmp/nodesource_setup.sh; \
+    apt-get install -y --no-install-recommends nodejs; \
+    rm -rf /var/lib/apt/lists/* /tmp/nodesource_setup.sh; \
+    node --version; npm --version
+
+# D4 — the agent is an ordinary user with no route to root. `sudo` is not in the
+# contents table; assert its absence rather than assume the base omits it, so
+# "no runtime installs" is enforced by privilege and not by a rule.
+RUN set -eux; \
+    apt-get purge -y sudo 2>/dev/null || true; \
+    rm -rf /var/lib/apt/lists/*; \
+    if command -v sudo >/dev/null 2>&1; then \
+      echo "sudo is present in the image; ADR-0013 D4 forbids it" >&2; exit 1; \
+    fi
 
 RUN npm install -g openclaw@${OPENCLAW_VERSION}
 
 # r8 (supersedes r7's /opt/openclaw-plugins bake): plugins bake as BUNDLED
 # extensions in the runtime's stock root, because 2026.6.x gates
 # security-sensitive plugin APIs on provenance — `openKeyedStore is only
-# available for trusted plugins` unless origin === "bundled" (or the
-# runtime's own installer wrote trustedOfficialInstall, impractical on an
-# NFS state dir). Bundled also fixes CLI recognition and kills the r7
-# duplicate-discovery warning; no path config is needed at all.
+# available for trusted plugins` unless origin === "bundled".
 #
-# Each spec MUST be pinned (`@openclaw/whatsapp@2026.6.11`). The package is
-# extracted (npm pack) into dist/extensions/<id>/ with its own production
-# node_modules; `require('openclaw')` resolves by walking up to
-# /usr/local/lib/node_modules. Baked ≠ enabled: inert until per-agent
-# config enables them, exactly like the disabled stock plugins.
+# Each spec MUST be pinned. Baked ≠ enabled: inert until per-agent config
+# enables them. Collision guard: if upstream ever ships a stock plugin with the
+# same id, the build FAILS rather than clobbering.
 #
-# Collision guard: if an upstream ever ships a stock plugin with the same
-# id, the build FAILS — reconciling that is a conscious decision, never a
-# clobber. NOTE: dist/extensions is upstream-internal, not a published
-# interface; image-compile's probe asserts each baked id appears under the
-# stock source root in `plugins list`, so an upstream layout change fails
-# the build, not a deployed agent.
-#
-# r8.1: after extraction, the plugin's `openclaw` manifest block is
-# normalised — npm-published plugins declare SOURCE-form specifiers
-# ("./index.ts", "./auth-presence") that only the runtime installer's alias
-# table can bridge; a bundled record has none, so channel submodule loads
-# fail ("escapes plugin root or fails alias checks"). The normaliser
-# rewrites each specifier to the actual built file and FAILS the build if
-# no built equivalent exists.
+# r8.1: after extraction the plugin's `openclaw` manifest block is normalised —
+# npm-published plugins declare SOURCE-form specifiers that only the runtime
+# installer's alias table can bridge; a bundled record has none, so channel
+# submodule loads fail. The normaliser rewrites each specifier to the built file
+# and FAILS the build if no built equivalent exists.
 COPY normalize-plugin-manifest.js /opt/wrapper/
 ARG BAKED_PLUGINS=""
 RUN set -eux; \
@@ -84,6 +113,28 @@ RUN set -eux; \
       done; \
     fi
 
+# D6 — sshd is present, key-gated, and presence is not access.
+#   * password auth off, root login off, keys only;
+#   * NO authorized_keys is shipped — the file's ABSENCE is the closed door, and
+#     an empty file is a different fact. The deployer places it per agent at
+#     /home/agent/.ssh/authorized_keys (mode 0600, owned by the agent uid).
+#   * NO host keys are baked. Baking them would give every agent container in
+#     the estate the same host identity, so the entrypoint generates them on
+#     first start into the container's own filesystem.
+RUN set -eux; \
+    mkdir -p /etc/ssh/sshd_config.d /run/sshd; \
+    printf '%s\n' \
+      '# ADR-0013 D6 — keys only; presence is not access.' \
+      'PasswordAuthentication no' \
+      'PermitEmptyPasswords no' \
+      'KbdInteractiveAuthentication no' \
+      'PermitRootLogin no' \
+      'PubkeyAuthentication yes' \
+      'AuthorizedKeysFile .ssh/authorized_keys' \
+      > /etc/ssh/sshd_config.d/10-arcpower.conf; \
+    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub; \
+    rm -f /home/agent/.ssh/authorized_keys
+
 RUN mkdir -p /opt/wrapper /home/agent /agent/configs /agent/memory /agent/sessions /agent/scratch \
  && chmod 0755 /home/agent
 
@@ -93,7 +144,8 @@ RUN chmod 0755 /opt/wrapper/entrypoint.sh /opt/wrapper/agent-run.sh
 ENV OPENCLAW_BIND=lan \
     OPENCLAW_PORT=18789 \
     OPENCLAW_EXTRA_ARGS="" \
-    AGENT_HOME=/agent
+    AGENT_HOME=/agent \
+    SSHD_PORT=22
 
 LABEL org.opencontainers.image.title="openclaw-runtime" \
       org.opencontainers.image.description="ARC Power wrapper for pinned upstream OpenClaw"

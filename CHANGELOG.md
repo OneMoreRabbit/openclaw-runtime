@@ -24,6 +24,52 @@ version, which is an image-tag concern the release number cannot express. The
 entries below continue to be organised by wrapper revision, and
 `image-compile build openclaw <version> --wrapper-rev rN` is unchanged.
 
+## r10 — 2026-09-19
+
+**The container becomes a small Ubuntu machine** (ADR-0013). One image line, no
+variants, and the agent gets a system it can work on rather than a wrapper around
+one binary.
+
+**Base: `ubuntu:24.04`**, replacing `node:24-bookworm-slim`. The constitution's
+platform (principle 6) now holds inside the container as well as outside. node
+24.x comes from NodeSource, since Ubuntu ships an older major and OpenClaw does
+not start without it.
+
+**Contents, exactly (D3):** node, OpenClaw at the pin, **python3, git, curl**,
+**openssh-server**, gosu, tini, ca-certificates. Nothing else. A tool not on that
+list is added by amending the ADR, not by a build arg.
+
+**`OPENCLAW_VARIANT` and `OPENCLAW_EXTRA_APT` are retired (D1).** They were the
+escape hatch that reintroduced the per-agent image drift the architecture exists
+to prevent. Passing either now **fails the build** rather than being ignored — a
+retired knob that silently does nothing is worse than one that errors.
+
+**No sudo (D4).** Asserted rather than assumed: the build purges it and then
+fails if `sudo` is still resolvable. "No installs at runtime" is enforced by
+privilege — `apt` fails because the agent has no route to root, not because it is
+asked not to.
+
+**sshd, keys only (D6).** Password, empty-password, keyboard-interactive and root
+login are all off. Two absences are deliberate and load-bearing:
+
+- **No `authorized_keys` is shipped.** Its absence is the closed door; an empty
+  file would be a different fact. The entrypoint creates `/home/agent/.ssh`
+  (0700, agent-owned) so a deployer-placed file lands correctly, and never
+  creates the file itself.
+- **No host keys are baked.** They are generated on first start into the
+  container's own filesystem. Baking them would give every agent container in
+  the estate the same host identity — a worse failure than having none.
+
+sshd starts before the privilege drop and its failure is non-fatal: ssh is for
+inspection, the agent is the job.
+
+**r9 identity semantics are unchanged**, deliberately and verifiably: implicit
+`gosu "${AGENT_UID}"` when the account is ours, explicit `uid:gid` only on a
+genuine foreign collision, the primary-gid assertion, and the corrected collision
+warning. The base change is where a silent regression would cost most — `useradd`
+defaults differ between Debian and Ubuntu — so guards 9 and 9b are the
+acceptance, measured on the gosu child, never container PID 1.
+
 ## r9 — 2026-09-18
 
 **Fix: supplementary groups now reach the agent process; the uid-collision

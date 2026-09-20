@@ -179,19 +179,31 @@ RUN set -eux; \
       'PubkeyAuthentication yes' \
       'AuthorizedKeysFile /agent/configs/main/ssh/authorized_keys' \
       > /etc/ssh/sshd_config.d/10-arcpower.conf; \
-    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub; \
-    for f in /agent/configs/main/ssh/authorized_keys /home/agent/.ssh/authorized_keys; do \
-      if [ -e "${f}" ]; then echo "FATAL: image ships an authorized_keys at ${f}" >&2; exit 1; fi; \
-    done; \
-    if ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then \
-      echo "FATAL: image bakes ssh host keys" >&2; exit 1; \
-    fi
+    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 
 RUN mkdir -p /opt/wrapper /home/agent /agent/configs /agent/memory /agent/sessions /agent/scratch \
  && chmod 0755 /home/agent
 
 COPY entrypoint.sh agent-run.sh /opt/wrapper/
 RUN chmod 0755 /opt/wrapper/entrypoint.sh /opt/wrapper/agent-run.sh
+
+# D6 gate — LAST layer that can see the filesystem, deliberately. Asserting
+# absence next to the `rm` that produced it only restates the line above: it
+# tests the author's reading of the build order, not the image. Every layer
+# that could introduce a key — the plugin bake, the mkdirs, the COPYs — is
+# behind us here, so this is the first point at which "the image ships no keys"
+# is a claim about the artefact rather than about one RUN.
+RUN set -eux; \
+    for f in /agent/configs/main/ssh/authorized_keys /home/agent/.ssh/authorized_keys; do \
+      if [ -e "${f}" ]; then echo "FATAL: image ships an authorized_keys at ${f}" >&2; exit 1; fi; \
+    done; \
+    if ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then \
+      echo "FATAL: image bakes ssh host keys" >&2; exit 1; \
+    fi; \
+    if command -v sudo >/dev/null 2>&1; then \
+      echo "FATAL: sudo present in the finished image (ADR-0013 D4)" >&2; exit 1; \
+    fi; \
+    test -f /opt/wrapper/openclaw-root
 
 ENV OPENCLAW_BIND=lan \
     OPENCLAW_PORT=18789 \

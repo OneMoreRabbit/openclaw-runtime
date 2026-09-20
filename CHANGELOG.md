@@ -37,7 +37,10 @@ it is a broken one.
   `/home/agent` is container-local and does not survive a recreate; the configs
   surface is the per-agent one that persists. The image still ships **no**
   authorized_keys and now **asserts** its absence at build time at both the new
-  path and the old, rather than merely `rm -f`-ing it.
+  path and the old, rather than merely `rm -f`-ing it. The assert is the
+  **last layer** of the build, not the line after the `rm`: an absence check
+  sitting next to the removal that produced it only restates that removal, and
+  cannot see a key introduced by any later layer.
 - **The agent account gets `/bin/bash`.** Its absence was what turned a valid
   key into a refusal. The closed state is "no authorized_keys", not "no usable
   account".

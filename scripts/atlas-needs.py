@@ -11,6 +11,7 @@ here). This reads the estate's needs register, filters to this seat, and keeps a
 file the briefing and the Stop guard read.
 
   --refresh   fetch the register, write ~/.atlas/needs-open.md   (the ESTATE schedules this)
+              register not reached: the file gets a dated STALE line, exit 1
   --show      exit 2 with a short message IF the file changed     (Stop guard, every turn)
   (no flag)   print the file                                       (by hand)
 
@@ -58,25 +59,51 @@ def conf(path: Path) -> dict:
     return d
 
 
+PROJECT_KNOWN = True
+
+
 def my_slugs(explicit: str | None) -> list[str]:
     if explicit:
         return [s.strip() for s in explicit.split(",") if s.strip()]
     c = conf(REPO / ".atlas.conf")
-    slugs = [c["SLUG"]] if c.get("SLUG") else []
+    first = c.get("COMPONENT") or c.get("SLUG")
+    slugs = [first] if first else []
     # a seat holding N wired repos answers to all of them (launch-dir siblings, 1.21)
     launch = c.get("ATLAS_LAUNCH_DIR", "").replace("$HOME", str(HOME))
+    def _norm(u): return str(u or "").lower().removesuffix(".git")
+    own_remote = _norm(c.get("ATLAS_VAULT_REMOTE"))
     if launch and Path(launch).is_dir():
         for d in Path(launch).iterdir():
-            s = conf(d / ".atlas.conf").get("SLUG")
-            if s and s not in slugs:
+            sc = conf(d / ".atlas.conf")
+            s = sc.get("COMPONENT") or sc.get("SLUG")
+            if s and s not in slugs and (not own_remote or _norm(sc.get("ATLAS_VAULT_REMOTE")) == own_remote):
                 slugs.append(s)
     # a both-hats seat is ALSO its vault's arch: answer to `arch` and `<project>-arch`
     # (1.27.5; ATLAS_PROJECT in .atlas.conf, else nothing project-specific is assumed)
+    pj = c.get("ATLAS_PROJECT", "").strip().lower()
+    if not pj:
+        # the vault declares the project (1.34.8, orient.arch: without ATLAS_PROJECT the
+        # helper never built <project>.component.<name> and reported zero open)
+        try:
+            for line in (REPO / ".atlas" / "registry" / "io-graph.yml").read_text(
+                    encoding="utf-8").splitlines():
+                if line.startswith("project:"):
+                    pj = line.split(":", 1)[1].split("#")[0].strip().strip("'\"").lower()
+                    break
+        except OSError:
+            pass
+    global PROJECT_KNOWN
+    PROJECT_KNOWN = bool(pj)
+    # full contract addresses (ADR-0014, 1.30.3): <project>.component.<name> for each
+    # held component; the older bare and qualified forms stay accepted through the
+    # migration (the register carries both estates for a while).
+    if pj:
+        slugs += [f"{pj}.component.{s}" for s in list(slugs)]
     if c.get("ATLAS_ROLE", "").strip().lower() == "both":
         slugs.append("arch")
-        pj = c.get("ATLAS_PROJECT", "").strip().lower()
         if pj:
             slugs.append(f"{pj}-arch")
+            slugs.append(f"{pj}.arch")
     # Operator override (1.28.6, arc-platform v0.2): AUTHORITATIVE when present — it
     # REPLACES the derived list. It was additive-only, so it could widen a match but
     # never narrow one, and a seat told to fix a mis-match by setting it found the file
@@ -94,19 +121,49 @@ def register_url() -> str:
         or os.environ.get("ATLAS_NEEDS_REGISTER", "")
 
 
+def repo_path(url: str) -> str:
+    """`<owner>/<repo>` when the URL names a GitHub repository, else ''."""
+    for pat in (r"https?://api\.github\.com/repos/([^/]+/[^/?#]+)",
+                r"https?://raw\.githubusercontent\.com/([^/]+/[^/?#]+)",
+                r"https?://github\.com/([^/]+/[^/?#]+)"):
+        m = re.match(pat, url)
+        if m:
+            return m.group(1).removesuffix(".git")
+    return ""
+
+
 def token_for(url: str) -> str | None:
-    """The seat's own credential routing (git credential fill) — never a hardcoded file."""
+    """The seat's own credential routing (git credential fill) — never a hardcoded file.
+
+    Ask WITH the repository path first (1.35.3). A seat on the estate's GitHub App holds
+    no stored token: its credential helper mints one per repository and needs the path to
+    know which. Asked for the host alone it answers nothing, and the register read 404s
+    (arc-platform 2026-10-23, agent-eco 2026-11-11). Host-only stays as the fallback for
+    a seat with one stored token.
+    """
     m = re.match(r"https?://([^/]+)", url)
     if not m:
         return None
-    try:
-        out = subprocess.run(["git", "credential", "fill"], input=f"protocol=https\nhost={m.group(1)}\n\n",
-                             capture_output=True, text=True, timeout=10).stdout
-        for line in out.splitlines():
-            if line.startswith("password="):
-                return line[len("password="):]
-    except (OSError, subprocess.SubprocessError):
-        pass
+    asks = []
+    rp = repo_path(url)
+    if rp:
+        asks += [f"protocol=https\nhost=github.com\npath={rp}.git\n\n",
+                 f"protocol=https\nhost=github.com\npath={rp}\n\n"]
+    asks.append(f"protocol=https\nhost={m.group(1)}\n\n")
+    if m.group(1) == "api.github.com":
+        # a seat holding only the base-host credential is normal (1.30.11): fall back
+        # rather than go tokenless
+        asks.append("protocol=https\nhost=github.com\n\n")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")     # a hook has nobody to prompt
+    for ask in asks:
+        try:
+            out = subprocess.run(["git", "credential", "fill"], input=ask, env=env,
+                                 capture_output=True, text=True, timeout=30).stdout
+            for line in out.splitlines():
+                if line.startswith("password=") and len(line) > len("password="):
+                    return line[len("password="):]
+        except (OSError, subprocess.SubprocessError):
+            pass
     return os.environ.get("GITHUB_TOKEN")
 
 
@@ -144,34 +201,74 @@ def refresh(explicit_slugs: str | None) -> int:
         # Never render a failed fetch as fresh (1.28.2, AgentEco): stamp the EXISTING file
         # so --show and the briefing say the data is stale and why, rather than serving an
         # hours-old "nothing open" as current. Continue degraded; declare it.
-        print(f"atlas-needs: refresh failed ({e}); keeping the existing file, marked stale",
+        hint = ""
+        if "404" in str(e) and not token_for(url):
+            hint = (" — NO CREDENTIAL resolved for this URL: to GitHub, a private "
+                    "file without a token IS a 404, so this likely means missing "
+                    "credential, not missing register (1.30.11). Check: "
+                    "printf 'protocol=https\\nhost=github.com\\npath=<owner>/<repo>.git\\n\\n'"
+                    " | git credential fill")
+        print(f"atlas-needs: refresh failed ({e}){hint}; keeping the existing file, marked stale",
               file=sys.stderr)
+        # The mark carries the date of the failed attempt and is replaced at every
+        # failure; a seat with no file yet gets one that says so. Exit 1, so whatever
+        # schedules --refresh sees the failure (1.35.7, orchestrator: a list stayed four
+        # days old on every seat and the timer saw nothing).
+        mark = (f"> ⚠ **STALE — last refresh FAILED {date.today().isoformat()}** "
+                f"({str(e)[:80]}). The register was not reached; the list below is older "
+                "and may be out of date.")
         if OUT.exists():
-            body = OUT.read_text(encoding="utf-8")
-            mark = f"> ⚠ **STALE — last refresh FAILED** ({str(e)[:80]}). This list is as of the "
-            if "STALE — last refresh FAILED" not in body:
-                lines = body.splitlines()
-                lines.insert(1, mark + "date below and may be out of date; the register was not reached.")
-                OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return 0
+            lines, skip = [], False
+            for line in OUT.read_text(encoding="utf-8").splitlines():
+                if "STALE — last refresh FAILED" in line:
+                    skip = True                    # drop the old mark and its blank line
+                    continue
+                if skip and not line.strip():
+                    skip = False
+                    continue
+                skip = False
+                lines.append(line)
+        else:
+            lines = [f"# Needs addressed to this seat ({', '.join(slugs)})", "",
+                     "_No list yet: the register has never been read on this seat._"]
+        lines[2:2] = [mark, ""]
+        STATE.mkdir(parents=True, exist_ok=True)
+        OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return 1
     reg_date = str(reg.get("updated", ""))[:10]
     mine, _seen = [], set()
     for n in reg.get("needs", []):
-        if str(n.get("status", "open")).lower().startswith(RETIRED):
+        if is_retired_status(n.get("status", "open")):
             continue
         if not addressed_to_me(n.get("addressee", ""), slugs):
             continue
-        key = n.get("path") or n.get("title") or repr(n)
+        key = (n.get("vault", ""), n.get("path") or n.get("title") or repr(n))
         if key in _seen:          # the register keys rows per addressee: one need
             continue              # addressed to 3 of a seat's slugs is still ONE need
         _seen.add(key)
         mine.append(n)
-    ext = sum(1 for n in mine if n.get("vault"))
+    # Per-row truth, never a blanket (1.29.2, three AgentEco consumers measured the
+    # same wrong sentence): a row's own `vault` column decides whether it is external.
+    own_vault = ""
+    m = re.search(r"/((?:Atlas|Nav)-[\w.-]+?)(?:\.git)?$",
+                  conf(REPO / ".atlas.conf").get("ATLAS_VAULT_REMOTE", ""))
+    if m:
+        own_vault = m.group(1)
+    for n in mine:
+        n["_ext"] = bool(n.get("vault")) and n.get("vault") != own_vault
+    ext = sum(1 for n in mine if n["_ext"])
+    inv = len(mine) - ext
+    desc = f"**{len(mine)} open** — {ext} external (filed in other vaults; your briefing cannot render those), "
+    desc += (f"{inv} in YOUR vault: for those the briefing is the closer view — if it "
+             "disagrees with this register, believe the briefing and report the disagreement."
+             if inv else "none in this vault.")
+    if not PROJECT_KNOWN:
+        desc = ("**INCOMPLETE — project unknown** (no ATLAS_PROJECT in .atlas.conf and no "
+                "project: in the vault clone), so needs addressed to your full address "
+                "<project>.component.<name> are NOT matched. " + desc)
     L = [f"# Needs addressed to this seat ({', '.join(slugs)})", "",
-         f"_Estate register dated {reg_date}. **{len(mine)} open**, all EXTERNAL — filed in "
-         "other vaults, so this vault's briefing cannot render them (a location fact, not a "
-         "read state). Read each where it lives (you hold the vault-read token); answer in "
-         "your own provides/ with `responds_to:`._", ""]
+         f"_Estate register dated {reg_date}. {desc} Answer in your own provides/ with "
+         "`responds_to:`._", ""]
     try:
         age = (date.today() - datetime.strptime(reg_date, "%Y-%m-%d").date()).days
         if age > 3:
@@ -182,7 +279,9 @@ def refresh(explicit_slugs: str | None) -> int:
     if mine:
         L += ["| need | from | vault | updated |", "|---|---|---|---|"]
         L += [f"| {n.get('title', n.get('path', '?'))} <br>`{n.get('path', '?')}` | "
-              f"{n.get('author', '?')} | {n.get('vault', '?')} | {n.get('updated', '?')} |"
+              f"{n.get('author', '?')} | "
+              f"{n.get('vault', '?')}{'' if n['_ext'] else ' (YOURS — trust your briefing)'} | "
+              f"{n.get('updated', '?')} |"
               for n in mine]
     else:
         L.append("_none open._")
@@ -194,7 +293,15 @@ def refresh(explicit_slugs: str | None) -> int:
     return 0
 
 
-RETIRED = ("resolved", "closed", "done", "superseded")   # a need is live unless retired (method RETIRED_STATUSES); 1.27.8
+# The method's retirement vocabulary — MUST equal atlas_validate.py RETIRED_STATUSES
+# (method CI asserts they agree, 1.30.1: this copy drifted from 1.28.2 to 1.30.0 and
+# carried 25 closed needs as open work estate-wide). Whole-word match, not prefix.
+RETIRED = ("superseded", "resolved", "closed", "done", "answered", "retired")
+
+
+def is_retired_status(status: str) -> bool:
+    toks = set(re.findall(r"[a-z]+", str(status).lower()))
+    return any(w in toks for w in RETIRED)
 CONS = STATE / "consumers.md"
 
 
@@ -266,8 +373,8 @@ def show() -> int:
         return 0
     STAMP.write_text(cur, encoding="utf-8")
     n = cur.count("\n| ") - (1 if "| need |" in cur else 0)
-    print(f"Atlas: {max(n, 0)} EXTERNAL need(s) addressed to you — filed in other vaults, so "
-          f"your in-vault briefing cannot render them (a location fact, not unread). Read "
+    print(f"Atlas: {max(n, 0)} open need(s) on the estate register addressed to you (the "
+          f"file says which are external and which are in your own vault). Read "
           f"{OUT} (also in your briefing), then finish.", file=sys.stderr)
     return 2
 
